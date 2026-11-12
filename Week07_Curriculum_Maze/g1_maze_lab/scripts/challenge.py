@@ -42,6 +42,7 @@ import os
 import sys
 import time
 from collections import deque
+import numpy as np
 
 # Load imgui_bundle (the viewer's UI, used for the timer) before Isaac Lab (see maze_autopilot.py).
 with contextlib.suppress(ImportError):
@@ -412,6 +413,8 @@ def challenge_playback(step, *, dt, args_cli, env_cfg):
     to_goal = cells_to_goal(walls, n, start, goal)
     beds = [tuple(b[3:]) for b in hazards["spike"]]
     spike_top = hazards["spike_top"] + 0.02
+    traj_log_path = os.environ.get("MAZE_LOG_TRAJ", "")
+    traj_records = [] if traj_log_path else None
     print(f"[CHALLENGE] level {RUN['level']} seed {RUN['seed']}  maze {n}x{n}, start {start} goal {goal}, "
           f"shortest route {to_goal[start]} cells", flush=True)
     print("[CHALLENGE] hazards: " + ", ".join(f"{k} {len(v)}" for k, v in hazards.items()
@@ -475,6 +478,10 @@ def challenge_playback(step, *, dt, args_cli, env_cfg):
         t = (k + 1) * dt
         prev_cell = cell
         p = (robot.data.root_pos_w.torch[0, :2] - o[0, :2]).tolist()
+        if traj_records is not None:
+            lin_v = robot.data.root_lin_vel_w.torch[0, :2].norm().item()
+            cur_yaw = float(_yaw(robot.data.root_quat_w.torch)[0].item())
+            traj_records.append([t, p[0], p[1], cur_yaw, lin_v])
         cell = (min(max(round(p[0] / CELL_SIZE), 0), n - 1), min(max(round(p[1] / CELL_SIZE), 0), n - 1))
         left = to_goal.get(cell, best_left)
         best_left = min(best_left, left)
@@ -561,6 +568,9 @@ def challenge_playback(step, *, dt, args_cli, env_cfg):
                  falls, time.strftime("%Y-%m-%d %H:%M:%S"), f"{best_m:.1f}", f"{route_m:.0f}", RUN["level"]]
             )
         print(f"[CHALLENGE] written to {os.path.abspath(path)}", flush=True)
+    if traj_records is not None and traj_log_path:
+        np.save(traj_log_path, np.array(traj_records, dtype=np.float32))
+        print(f"[CHALLENGE] Saved trajectory log to {traj_log_path}", flush=True)
     if recorder is not None:
         recorder.close()
     if viewer is not None and finish is not None and not REC:

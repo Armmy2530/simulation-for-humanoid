@@ -1,0 +1,93 @@
+# ==============================================================================
+# Git Ignore Configuration: Week07_Curriculum_Maze
+# Tracks source code, root README.md, and artifacts/ (notes, plots, and videos).
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Artifacts & Deliverables (Track Markdown notes, PNG plots, and MP4 videos!)
+# ------------------------------------------------------------------------------
+snapshots/
+**/snapshots/
+artifacts/archive/
+artifacts/**/run/test*.mp4
+
+# ------------------------------------------------------------------------------
+# 2. Model Files, Weights & Checkpoints
+# ------------------------------------------------------------------------------
+*.pt
+*.pth
+*.onnx
+*.onnx.data
+*.bin
+*.ckpt
+*.safetensors
+*.pkl
+*.pickle
+exported/
+**/exported/
+model_*.pt
+policy.pt
+policy.onnx
+
+# ------------------------------------------------------------------------------
+# 3. Logs, Telemetry & Experiment Runs
+# ------------------------------------------------------------------------------
+logs/
+**/logs/
+outputs/
+**/outputs/
+runs/
+**/runs/
+wandb/
+**/wandb/
+tensorboard/
+**/tensorboard/
+*.log
+*tfevents*
+*.tfevents.*
+
+# ------------------------------------------------------------------------------
+# 4. Simulation Raw Data & Temporary Media Files (Allow artifacts/**/*.mp4)
+# ------------------------------------------------------------------------------
+*.npz
+*.npy
+*.h5
+*.hdf5
+*.avi
+*.mov
+*.mkv
+*.mp4
+!artifacts/**/*.mp4
+artifacts/archive/**/*.mp4
+artifacts/**/run/test*.mp4
+
+# ------------------------------------------------------------------------------
+# 5. Python Bytecode, Caches & Environments
+# ------------------------------------------------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+.env
+
+# ------------------------------------------------------------------------------
+# 6. OS & Editor Artifacts
+# ------------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
