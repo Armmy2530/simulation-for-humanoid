@@ -248,3 +248,42 @@ All eight 50 Hz telemetric archives are saved in [`run/`](run/):
   - [`run/spike_course_B_C1_Centroid.npz`](run/spike_course_B_C1_Centroid.npz)
   - [`run/spike_course_B_C2_Exp10_Old_Slalom.npz`](run/spike_course_B_C2_Exp10_Old_Slalom.npz)
   - [`run/spike_course_B_C3_Method1_LeadInOut.npz`](run/spike_course_B_C3_Method1_LeadInOut.npz)
+
+---
+
+## 🏆 7. Short Route Direct Traversal Breakthrough (0 Falls, 56–58s)
+
+### 7.1 Background & Motivation
+In initial Canadian Traveler Problem (CTP) testing, the robot peeked at the entrance fork `(1, 0)` and took the safe **Long Route** (106.12 s, 56.07 m), avoiding the severe hazards of the right-hand **Short Route** (`(0,0) -> (1,0) -> (2,0) ...`).
+
+To push the G1 humanoid to its physical and algorithmic limits, we upgraded `A4_Hazard_G2` to conquer the Short Route directly—negotiating steep 25–26 cm trapezoid ramps, 16–20 cm floor trenches, rough box fields, and single-lane spike beds with **0 falls** at locked Track A speed ($v = 0.60\text{ m/s}$).
+
+### 7.2 The 4 Root Causes & Algorithmic Solutions
+
+1. **Start Fork Route Commitment**:
+   - *Problem*: Pre-emptive online hazard penalties ($+25.0$) on ramps and trenches caused the A* planner to reverse at `(1, 0)`.
+   - *Fix*: Removed artificial fork diversion penalty, committing G1 to the optimal direct Short Route.
+
+2. **Ramp / Trench Spike Misclassification & Zone Purge**:
+   - *Problem*: The online 3D height-scanner flagged ramp slope edges and trench lips ($z > 0.12\text{ m}$) as deadly spikes, injecting spurious lateral avoidance offsets that drove the robot off the ramp edge.
+   - *Fix*: Explicitly tracked `cell_ramp_zones` and `cell_gap_zones`. The moment ramp/gap geometry is confirmed, any overlapping spike zones in that cell are purged immediately.
+
+3. **Non-Holonomic Heading Alignment (Zeroing Lateral Velocity)**:
+   - *Problem*: Diagonal swerving with commanded $v_y \neq 0$ caused leg crossing, foot scuffing, and roll divergence, because the pretrained `G1Rough` policy was trained with zero commanded lateral velocity ($v_y = 0$).
+   - *Fix*: Locked `v_y_des = 0.0` everywhere. All steering is executed purely via angular velocity yaw commands $\omega_z$.
+
+4. **Corridor Ramp & Gap Traversal Profiles**:
+   - *Ramp Climbing* (`-0.85 <= u_prog <= 0.80`): Centered via corridor heading lock with tight angular rate clamp $\omega_{\text{des}} = \text{clamp}(0.8 \psi_{\text{err}} + 0.2 v_{\text{err}}, -0.06, +0.06)\text{ rad/s}$ at $v_{\text{des}} = 0.60\text{ m/s}$, preventing roll destabilization on 25 cm inclines.
+   - *Trench Pit Clearance* (`-1.05 <= u_prog <= 0.18`): The G1 internal height scanner perceives floor drops ($z < -0.15\text{ m}$) and naturally hesitates/brakes. By driving forward momentum ($v_{\text{des}} = 0.85\text{ m/s}$) from cell entry until gap clearance, the robot strides cleanly across the 19.7 cm trench in a single step without pitching into the pit.
+
+### 7.3 Quantitative Verification Results
+
+| Map / Seed | Route Traversed | Time ($t_{\text{goal}}$) | Falls | Resets | Hazards Cleared | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Level 7 (Seed 2026)** | **Short Route** (Right Fork) | **58.1 s** | **0** | **0** | Ramp, Trench, Rough, Spikes | **GOAL REACHED** 🎯 |
+| **Level 7 (Seed 42)** | **Short Route** (Right Fork) | **56.3 s** | **0** | **0** | Ramp, Trench, Rough, Spikes | **GOAL REACHED** 🎯 |
+
+### 7.4 Artifacts & Visual Proof
+- **Replay Video (Chase Camera)**: [`artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4`](run/level7_short_route_walk.mp4) (3.4 MB, H.264 @ 25 fps, 3D Newton Viewer)
+- **Verification Telemetry Plot**: [`artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png`](level7_short_route_verification.png) (2x2 comparison grid showing trajectories, velocity, yaw, and clearance profiles)
+
