@@ -1035,8 +1035,12 @@ class MazeAutopilot:
 
                         psi_cur = float(yaw[e].item())
                         yaw_err = math.atan2(math.sin(corridor_yaw - psi_cur), math.cos(corridor_yaw - psi_cur))
-                        # Gentle heading lock: cap at 0.06 rad/s so humanoid climbs incline without leg twisting/stalling
-                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err))
+                        if axis == 0:
+                            v_err = (cj * self.c - pos_xy[e, 1].item()) * s_dir
+                        else:
+                            v_err = -(ci * self.c - pos_xy[e, 0].item()) * s_dir
+                        # Gentle heading lock with centerline bias: strictly capped at 0.06 rad/s
+                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err + 0.20 * v_err))
                         v_y_des[e] = 0.0
                         v_des[e] = float(self.speed)
                         continue
@@ -1076,8 +1080,12 @@ class MazeAutopilot:
 
                         psi_cur = float(yaw[e].item())
                         yaw_err = math.atan2(math.sin(corridor_yaw - psi_cur), math.cos(corridor_yaw - psi_cur))
-                        # Gentle heading lock: cap at 0.06 rad/s so humanoid steps straight over trench without diagonal swerve
-                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err))
+                        if axis == 0:
+                            v_err = (cj * self.c - pos_xy[e, 1].item()) * s_dir
+                        else:
+                            v_err = -(ci * self.c - pos_xy[e, 0].item()) * s_dir
+                        # Gentle heading lock with centerline bias: strictly capped at 0.06 rad/s
+                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err + 0.20 * v_err))
                         v_y_des[e] = 0.0
                         v_des[e] = 0.85
                         continue
