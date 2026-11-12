@@ -122,14 +122,17 @@ All experimental reports (`README.md`), high-resolution telemetry plots (`*.png`
 | **Exp 07**: Track A $G^2$ Quintic Spline | [`experiment_07_track_a_g2_spline/README.md`](artifacts/experiment_07_track_a_g2_spline/README.md) | [`track_a_g2_comparison.png`](artifacts/experiment_07_track_a_g2_spline/track_a_g2_comparison.png) | — |
 | **Exp 08**: Track A 6m Chest LiDAR | [`experiment_08_track_a_lidar_exploration/README.md`](artifacts/experiment_08_track_a_lidar_exploration/README.md) | [`track_a_lidar_random_mazes.png`](artifacts/experiment_08_track_a_lidar_exploration/track_a_lidar_random_mazes.png) | — |
 | **Exp 09**: Track A `--random-ends` | [`experiment_09_track_a_random_ends/README.md`](artifacts/experiment_09_track_a_random_ends/README.md) | [`track_a_random_ends_comparison.png`](artifacts/experiment_09_track_a_random_ends/track_a_random_ends_comparison.png) | — |
-| **Exp 10**: Track A Multi-Hazard & Slalom | [`experiment_10_track_a_hazard_slalom/README.md`](artifacts/experiment_10_track_a_hazard_slalom/README.md) | [`track_a_hazard_slalom_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)<br>[`spike_isolation_method1_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png) | [`run/spike_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/spike_course_walk.mp4)<br>[`run/level7_short_route_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4)<br>[`run/trackA_l7_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/trackA_l7_course_walk.mp4) |
+| **Exp 10**: Track A Multi-Hazard & Slalom | [`experiment_10_track_a_hazard_slalom/README.md`](artifacts/experiment_10_track_a_hazard_slalom/README.md) | [`level7_short_route_verification.png`](artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png)<br>[`track_a_hazard_slalom_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)<br>[`spike_isolation_method1_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png) | [`run/level7_short_route_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4)<br>[`run/spike_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/spike_course_walk.mp4)<br>[`run/trackA_l7_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/trackA_l7_course_walk.mp4) |
 
 ---
 
 ## 🖼️ Featured Benchmark Plots
 
-### 1. Full Level 7 & Level 9 Multi-Hazard Benchmark (`4/4 Goal Reached, 0 Falls`)
+### 1. Level 7 Direct Short-Route Traversal (`58.1 s` on Seed 2026 & `56.3 s` on Seed 42, `0 Falls`)
+![Level 7 Short Route Verification](artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png)
+
+### 2. Full Level 7 & Level 9 Multi-Hazard Benchmark (`4/4 Goal Reached, 0 Falls`)
 ![Track A Multi-Hazard Comparison](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)
 
-### 2. Isolated Spike & 2-Bed Opposing Slalom Course (`4/4 Cleared, 0 Falls`)
+### 3. Isolated Spike & 2-Bed Opposing Slalom Course (`4/4 Cleared, 0 Falls`)
 ![Spike & Slalom Isolation Comparison](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png)
