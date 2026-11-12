@@ -533,9 +533,9 @@ def challenge_playback(step, *, dt, args_cli, env_cfg):
                 if REC and t < finish + 3.0:
                     continue
                 break  # headless: done
-        if k % int(10.0 / dt) == 0:
+        if k % int(1.0 / dt) == 0:
             print(
-                f"[CHALLENGE] t={t:5.1f}s cell={cell} cells to goal {left} to goal {dist_m:.1f} m "
+                f"[CHALLENGE] t={t:5.1f}s cell={cell} p=({p[0]:.2f}, {p[1]:.2f}) to goal {dist_m:.1f} m "
                 f"(closest {best_m:.1f} m, shortest route {route_m:.0f} m) falls {falls}",
                 flush=True,
             )

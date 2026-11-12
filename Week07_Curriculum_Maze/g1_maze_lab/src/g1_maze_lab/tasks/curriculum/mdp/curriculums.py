@@ -157,3 +157,51 @@ class CommandRangeCurriculum(ManagerTermBase):
                 self._ranges.lin_vel_x = (lo, min(hi + step, final_max))
             self._sum, self._count, self._last_update = 0.0, 0, env.common_step_counter
         return self._ranges.lin_vel_x[1]
+
+
+class YawCommandRangeCurriculum(ManagerTermBase):
+    """Gradually widen the angular velocity (yaw/turning) command range as the robot masters turning.
+
+    Starts with a narrow turning range (e.g., [-0.2, 0.2] rad/s) so the humanoid focuses on stable
+    walking without large centrifugal disturbances. When the mean episode reward of ``reward_term``
+    exceeds ``threshold`` x its maximum possible value, the symmetric turning command range
+    [-max_yaw, max_yaw] is widened by ``step`` (up to ``final_max``).
+    """
+
+    def __init__(self, cfg: CurriculumTermCfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._ranges = env.command_manager.get_term(cfg.params.get("command_name", "base_velocity")).cfg.ranges
+        self.max_yaw = cfg.params.get("start_max", 0.2)
+        self._ranges.ang_vel_z = (-self.max_yaw, self.max_yaw)
+        self._sum = 0.0
+        self._count = 0
+        self._last_update = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        command_name: str = "base_velocity",
+        reward_term: str = "track_ang_vel_z_exp",
+        start_max: float = 0.2,
+        final_max: float = 1.2,
+        step: float = 0.1,
+        threshold: float = 0.75,
+        update_every: int = 24 * 20,
+    ) -> float:
+        if env.common_step_counter == 0 or len(env_ids) == 0:
+            return self.max_yaw
+
+        sums = env.reward_manager._episode_sums[reward_term][env_ids]
+        self._sum += float(sums.sum()) / env.max_episode_length_s
+        self._count += len(env_ids)
+
+        if env.common_step_counter - self._last_update >= update_every and self._count > 0:
+            weight = env.reward_manager.get_term_cfg(reward_term).weight
+            if self._sum / self._count > threshold * weight:
+                self.max_yaw = min(self.max_yaw + step, final_max)
+                self._ranges.ang_vel_z = (-self.max_yaw, self.max_yaw)
+            self._sum, self._count, self._last_update = 0.0, 0, env.common_step_counter
+
+        return self.max_yaw
+

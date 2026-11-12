@@ -70,6 +70,9 @@ def maze_terrain_cfg(layout: str | None, num_rows: int, num_cols: int) -> terrai
 
 def setup_maze(cfg, layout: str | None = CHALLENGE_LAYOUT, num_rows: int = 1, num_cols: int = 1):
     """Turn a G1 velocity env config into a maze env config (shared by the rough- and flat-policy tasks)."""
+    import os
+    if os.environ.get("MAZE_LAYOUT_OVERRIDE"):
+        layout = os.environ["MAZE_LAYOUT_OVERRIDE"]
     # scene: maze terrain instead of the infinite plane
     cfg.scene.terrain.terrain_type = "generator"
     cfg.scene.terrain.terrain_generator = maze_terrain_cfg(layout, num_rows, num_cols)
@@ -295,3 +298,15 @@ class G1MazeHard9EnvCfg(G1MazeHardEnvCfg):
     """Challenge 7.5 level 9: 9 x 9, more hazards, a slalom spike cell."""
 
     level = 9
+
+
+@configclass
+class G1MazeSpikeIsoEnvCfg(G1MazeHardEnvCfg):
+    """Challenge 7.5 Spike & Slalom Isolation: 5 x 5 maze."""
+
+    level = 5
+
+    def __post_init__(self):
+        super(G1MazeHardEnvCfg, self).__post_init__()
+        setup_hazard_maze(self, num_cells=5)
+        self.scene.num_envs = 1

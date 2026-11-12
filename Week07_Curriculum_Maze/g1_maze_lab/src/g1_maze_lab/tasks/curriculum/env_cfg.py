@@ -68,6 +68,22 @@ def velocity_term() -> CurrTerm:
     )
 
 
+def turning_term() -> CurrTerm:
+    # turning rate max 0.2 -> up to 1.0 rad/s: +0.1 every 15 iterations when tracking >= 50 %
+    return CurrTerm(
+        func=mdp.YawCommandRangeCurriculum,
+        params={
+            "command_name": "base_velocity",
+            "reward_term": "track_ang_vel_z_exp",
+            "start_max": 0.2,
+            "final_max": 1.0,
+            "step": 0.1,
+            "threshold": 0.50,
+            "update_every": 15 * STEPS_PER_IT,
+        },
+    )
+
+
 @configclass
 class G1CurriculumBaseEnvCfg(G1RoughEnvCfg):
     """G1 Rough sized for a laptop GPU: 1024 robots, 6 x 10 terrain tiles."""
@@ -99,6 +115,13 @@ class G1CurriculumVelocityEnvCfg(G1CurriculumBaseEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.curriculum.command_vel_x = velocity_term()
+
+
+@configclass
+class G1CurriculumTurningEnvCfg(G1CurriculumBaseEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.curriculum.command_ang_vel_z = turning_term()
 
 
 @configclass

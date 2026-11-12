@@ -279,6 +279,10 @@ def autopilot_playback(step, *, dt, args_cli, env_cfg):
             print("[MAZE] tile origins", terrain.terrain_origins.reshape(-1, 3).tolist(), flush=True)
             print("[MAZE] env origins", env.scene.env_origins.tolist(), flush=True)
     pilot = MazeAutopilot(n, MAZE_CELLS, CELL_SIZE, env.device, strategy=STRATEGY, speed=SPEED)
+    if "MAZE_MAX_TURN" in os.environ:
+        pilot.max_turn = float(os.environ["MAZE_MAX_TURN"])
+    if "MAZE_MIN_SPEED" in os.environ:
+        pilot.min_speed = float(os.environ["MAZE_MIN_SPEED"])
     pilot.debug = os.environ.get("MAZE_DEBUG") == "1"
     if "MAZE_ACC" in os.environ:  # "v,w" rate limits [m/s^2, rad/s^2]; "1e9,1e9" = no smoothing
         pilot.max_acc, pilot.max_ang_acc = (float(v) for v in os.environ["MAZE_ACC"].split(","))

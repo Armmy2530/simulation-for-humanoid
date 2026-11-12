@@ -34,3 +34,4 @@ _register("G1-Maze-Open-FlatPolicy", "G1MazeOpenFlatPolicyEnvCfg", "G1MazeFlatPo
 # Challenge 7.5: random hazard mazes 7 x 7 / 9 x 9 (practice levels), scripts/challenge.py
 _register("G1-Maze-Hard", "G1MazeHardEnvCfg", "G1MazePPORunnerCfg")
 _register("G1-Maze-Hard9", "G1MazeHard9EnvCfg", "G1MazePPORunnerCfg")
+_register("G1-Maze-SpikeIso", "G1MazeSpikeIsoEnvCfg", "G1MazePPORunnerCfg")

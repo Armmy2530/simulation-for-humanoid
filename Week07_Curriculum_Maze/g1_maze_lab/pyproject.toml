@@ -22,6 +22,7 @@ dependencies = [
     "isaaclab-dev[importers]",
     "imgui-bundle>=1.92.601",
     "imageio-ffmpeg>=0.5",  # challenge_runner.py: replay videos
+    "moviepy>=1.0.3",
 ]
 
 [project.entry-points."isaaclab.tasks"]
@@ -59,36 +60,35 @@ index-strategy = "unsafe-best-match"
 prerelease = "allow"
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "sys_platform == 'linux' and platform_machine == 'aarch64'",
-    "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
 override-dependencies = [
     "numpy>=2",
+    "warp-lang>=1.17.0",
     "mujoco~=3.12.0",
     "mujoco-warp~=3.12.0",
-    "newton[sim]==1.6.0",
-    "newton-usd-schemas>=0.4.1",
-    "torch==2.12.0",
-    "torchvision==0.27.0",
+    "newton[sim]==1.6.1",
+    "newton-usd-schemas>=0.5.0",
+    "torch==2.11.0",
+    "torchvision==0.26.0",
     "packaging>=20,<27",
 ]
 
 [tool.uv.sources]
-"isaaclab" = { path = "../../../../IsaacLab/source/isaaclab", editable = true }
-"isaaclab-assets" = { path = "../../../../IsaacLab/source/isaaclab_assets", editable = true }
-"isaaclab-contrib" = { path = "../../../../IsaacLab/source/isaaclab_contrib", editable = true }
-"isaaclab-dev" = { path = "../../../../IsaacLab", editable = true }
-"isaaclab-experimental" = { path = "../../../../IsaacLab/source/isaaclab_experimental", editable = true }
-"isaaclab-mimic" = { path = "../../../../IsaacLab/source/isaaclab_mimic", editable = true }
-"isaaclab-newton" = { path = "../../../../IsaacLab/source/isaaclab_newton", editable = true }
-"isaaclab-ov" = { path = "../../../../IsaacLab/source/isaaclab_ov", editable = true }
-"isaaclab-physx" = { path = "../../../../IsaacLab/source/isaaclab_physx", editable = true }
-"isaaclab-ppisp" = { path = "../../../../IsaacLab/source/isaaclab_ppisp", editable = true }
-"isaaclab-rl" = { path = "../../../../IsaacLab/source/isaaclab_rl", editable = true }
-"isaaclab-tasks" = { path = "../../../../IsaacLab/source/isaaclab_tasks", editable = true }
-"isaaclab-tasks-experimental" = { path = "../../../../IsaacLab/source/isaaclab_tasks_experimental", editable = true }
-"isaaclab-teleop" = { path = "../../../../IsaacLab/source/isaaclab_teleop", editable = true }
-"isaaclab-visualizers" = { path = "../../../../IsaacLab/source/isaaclab_visualizers", editable = true }
+"isaaclab" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab", editable = true }
+"isaaclab-assets" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_assets", editable = true }
+"isaaclab-contrib" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_contrib", editable = true }
+"isaaclab-dev" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab", editable = true }
+"isaaclab-experimental" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_experimental", editable = true }
+"isaaclab-mimic" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_mimic", editable = true }
+"isaaclab-newton" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_newton", editable = true }
+"isaaclab-ov" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_ov", editable = true }
+"isaaclab-physx" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_physx", editable = true }
+"isaaclab-ppisp" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_ppisp", editable = true }
+"isaaclab-rl" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_rl", editable = true }
+"isaaclab-tasks" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_tasks", editable = true }
+"isaaclab-tasks-experimental" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_tasks_experimental", editable = true }
+"isaaclab-teleop" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_teleop", editable = true }
+"isaaclab-visualizers" = { path = "/home/armmy2530/Project/cu-robo-class-ws/IsaacLab/source/isaaclab_visualizers", editable = true }
 "omniverseclient" = { index = "pypi-public" }
 "ovphysx" = { index = "pypi-public" }
 "ovrtx" = { index = "pypi-public" }
