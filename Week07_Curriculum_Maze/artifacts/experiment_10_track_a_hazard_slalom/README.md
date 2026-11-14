@@ -285,5 +285,49 @@ To push the G1 humanoid to its physical and algorithmic limits, we upgraded `A4_
 
 ### 7.4 Artifacts & Visual Proof
 - **Replay Video (Chase Camera)**: [`artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4`](run/level7_short_route_walk.mp4) (3.4 MB, H.264 @ 25 fps, 3D Newton Viewer)
-- **Verification Telemetry Plot**: [`artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png`](level7_short_route_verification.png) (2x2 comparison grid showing trajectories, velocity, yaw, and clearance profiles)
+- **Verification Telemetry Plot**: [`artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png`](level7_short_route_verification.png) (2x2 comparison grid showing ground-truth open corridors, zero wall intersections, velocity, yaw, and clearance profiles)
+
+---
+
+## 🎬 8. Robot Perception, Path Planning & `cmd_vel` Vector Visualization (Video & Keyframes)
+
+### 8.1 Video & Keyframe Summary
+To reveal precisely what the robot perceives in real-time, how its online A* and $G^2$ Quintic Hermite spline planner operate under fog of war, and how the commanded vs actual velocity vectors respond to terrain hazards, we built an ego-centric perception and telemetry dashboard:
+- **Animated MP4 Dashboard Video (1600x900 @ 20 fps, ~30s runtime)**: [`artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4`](run/robot_perception_planning_viz.mp4)
+- **Static 4-Keyframe Summary Figure (PNG)**: [`artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png`](robot_perception_planning_keyframes.png)
+
+![Robot Perception & Planning Keyframes](robot_perception_planning_keyframes.png)
+
+### 8.2 Dashboard Architecture (4 Coordinated Panels)
+1. **Panel A (Top-Left — Ego-Centric Local Sensor View, $4.8\text{ m} \times 4.8\text{ m}$)**:
+   - **72-Ray Chest LiDAR**: Live translucent cyan fan lines (`#06b6d4`) projecting from robot center to ray hit points.
+   - **3.2m x 3.2m (1089 points) 3D Height Scanner**: Dynamically classified by elevation category:
+     - *Floor Trench* ($z < -0.12\text{ m}$): Bright magenta dots (`#e879f9`)
+     - *Flat Floor* ($-0.12 \le z \le 0.018\text{ m}$): Slate gray floor mesh (`#334155`)
+     - *Rough Boxes* ($0.018 < z \le 0.12\text{ m}$): Amber/gold markers (`#fbbf24`)
+     - *Ramp / Spikes* ($0.12 < z \le 0.42\text{ m}$): Orange-red obstacles (`#f97316`)
+     - *Maze Walls* ($z > 0.45\text{ m}$): White square obstacles (`#e2e8f0`)
+   - **Planned $G^2$ Spline & Lookahead**: Local section of the active Quintic Hermine spline in glowing green (`#10b981`) and lookahead target star (`#facc15`).
+   - **Vector Overlay on Robot**:
+     - *Commanded Policy Velocity Vector* (`cmd_vel`): Bright Lime Green arrow (`#22c55e`) showing $[v_x, v_y]$ rotated to world frame.
+     - *Actual Robot Velocity Vector* (`actual_vel`): Gold arrow (`#eab308`) showing actual $[v_x, v_y]$.
+     - *Yaw Rate Turn Indicator*: Dynamic turn arc at robot front indicating left/right steering $\omega_z$.
+
+2. **Panel B (Top-Center — Global Online Map Discovery & A* / Spline Planning)**:
+   - Full $7 \times 7$ maze showing faint ground-truth hazards in background.
+   - **Online Wall Memory**: Unknown fog-of-war walls as dim dotted gray lines (`#334155`), and confirmed walls as solid white/blue lines (`#f8fafc`).
+   - **Online Detected Hazard Zones**: Dynamically boxed with colored borders as soon as discovered (`cell_ramp_zones` in amber, `cell_gap_zones` in magenta, `cell_spike_zones` in red).
+   - **Global Trajectory**: Online A* cell path (blue diamonds `#60a5fa`), full $G^2$ Quintic Spline (`#10b981`), traveled trail (`#38bdf8`), lookahead target, and current robot position.
+
+3. **Panel C (Top-Right — Synchronized 3D Physical Simulation Camera View)**:
+   - Displays synchronized 3D Newton Viewer chase camera frames from `level7_short_route_walk.mp4`.
+   - **Active Mode Banner**: Real-time status showing active controller mode, current grid cell `(i, j)`, elapsed time, and 0-fall status:
+     - `GAP STRIDE BOOST (vx=0.85 m/s)` (magenta)
+     - `STEEP RAMP CENTERLINE LOCK (|wz|<=0.06)` (amber)
+     - `SPIKE LANE AVOIDANCE` (red)
+     - `G2 QUINTIC SPLINE CRUISE (vx=0.60 m/s)` (green)
+
+4. **Panel D (Bottom Full-Width — Live Gauges & Scrolling Time-Series)**:
+   - **Panel D1 (Left)**: Live horizontal bar gauges for `cmd_vx` ($[0, 1.0]\text{ m/s}$), `cmd_vy` ($[-0.4, 0.4]\text{ m/s}$), `cmd_wz` ($[-1.2, 1.2]\text{ rad/s}$), and actual linear speed $\|\mathbf{v}\|$.
+   - **Panel D2 (Right)**: Scrolling time-series plot with moving playhead line at current time $t$, comparing commanded $v_x$ (green), actual speed (gold), and commanded yaw rate $\omega_z$ (cyan) across shaded hazard encounter bands (25cm ramp, 26cm ramp, 19.7cm trench, spike beds).
 

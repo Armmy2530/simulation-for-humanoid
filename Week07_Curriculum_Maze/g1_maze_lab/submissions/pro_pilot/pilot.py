@@ -1039,10 +1039,11 @@ class MazeAutopilot:
                             v_err = (cj * self.c - pos_xy[e, 1].item()) * s_dir
                         else:
                             v_err = -(ci * self.c - pos_xy[e, 0].item()) * s_dir
-                        # Gentle heading lock with centerline bias: strictly capped at 0.06 rad/s
-                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err + 0.20 * v_err))
+                        # Gentle heading lock with centerline bias: 0.06 rad/s clamp once aligned, 0.30 rad/s if tilted
+                        w_lim = 0.06 if abs(yaw_err) < 0.12 else 0.30
+                        w_des[e] = max(-w_lim, min(w_lim, 0.8 * yaw_err + 0.20 * v_err))
                         v_y_des[e] = 0.0
-                        v_des[e] = float(self.speed)
+                        v_des[e] = 0.75
                         continue
 
                 if c_cur in self.cell_gap_zones[e]:
@@ -1084,8 +1085,9 @@ class MazeAutopilot:
                             v_err = (cj * self.c - pos_xy[e, 1].item()) * s_dir
                         else:
                             v_err = -(ci * self.c - pos_xy[e, 0].item()) * s_dir
-                        # Gentle heading lock with centerline bias: strictly capped at 0.06 rad/s
-                        w_des[e] = max(-0.06, min(0.06, 0.8 * yaw_err + 0.20 * v_err))
+                        # Gentle heading lock with centerline bias: 0.06 rad/s clamp once aligned, 0.30 rad/s if tilted
+                        w_lim = 0.06 if abs(yaw_err) < 0.12 else 0.30
+                        w_des[e] = max(-w_lim, min(w_lim, 0.8 * yaw_err + 0.20 * v_err))
                         v_y_des[e] = 0.0
                         v_des[e] = 0.85
                         continue

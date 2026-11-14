@@ -145,6 +145,20 @@ MAZE_REC_MP4=../my_run.mp4 \
 uv run python scripts/challenge.py --policy ../policy.pt --pilot ../pilot.py --level 7 --seed 2026 --viz newton
 ```
 
+### D. Generate the 4-Panel Perception, Planned Path & `cmd_vel` Vector Visualization `.mp4`
+Run [`g1_maze_lab/scripts/visualize_pilot_perception.py`](g1_maze_lab/scripts/visualize_pilot_perception.py) to generate the synchronized 4-panel perception/planning/vector dashboard `.mp4` video and 4-keyframe summary `.png`:
+```bash
+cd g1_maze_lab
+
+# Run simulation, record 10 Hz sensor/planner telemetry, and render MP4 + PNG:
+uv run python scripts/visualize_pilot_perception.py --record --seed 2026
+
+# Fast re-render from cached telemetry (.pkl) without re-running simulation:
+uv run python scripts/visualize_pilot_perception.py --render-only
+```
+- **Output Video**: [`artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4)
+- **Output Keyframe Plot**: [`artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png`](artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png)
+
 ---
 
 ## 5. How to Submit `pilot.py` and `policy.pt`

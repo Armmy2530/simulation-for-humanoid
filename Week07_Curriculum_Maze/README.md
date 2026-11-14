@@ -55,6 +55,25 @@ MAZE_REC_MP4=../my_challenge_run.mp4 \
 uv run python scripts/challenge.py --policy ../policy.pt --pilot ../pilot.py --level 7 --seed 2026 --viz newton
 ```
 
+### D. Generate the 4-Panel Robot Perception, Path Planning & `cmd_vel` Vector Dashboard `.mp4`
+Use [`g1_maze_lab/scripts/visualize_pilot_perception.py`](g1_maze_lab/scripts/visualize_pilot_perception.py) to record 10 Hz multi-modal telemetry (72-ray Chest LiDAR, $3.2\text{ m} \times 3.2\text{ m}$ 3D height scan, online fog-of-war wall discovery, A\* + $G^2$ quintic spline, lookahead target, and `cmd_vel` / `actual_vel` vectors) and render the synchronized 4-panel `.mp4` video and 4-keyframe summary `.png`:
+
+```bash
+cd g1_maze_lab
+
+# 1. Full pipeline (record simulation telemetry + render MP4 video & 4-keyframe PNG):
+uv run python scripts/visualize_pilot_perception.py --record --seed 2026
+
+# 2. Fast re-render only (uses cached telemetry in artifacts/experiment_10_track_a_hazard_slalom/run/perception_telemetry_seed2026.pkl):
+uv run python scripts/visualize_pilot_perception.py --render-only
+
+# 3. Record telemetry cache only (skip video rendering):
+uv run python scripts/visualize_pilot_perception.py --record --record-only --seed 2026
+```
+**Outputs generated**:
+- **Animated 1600×900 @ 20 FPS MP4 Video**: [`artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4)
+- **4-Keyframe Milestone Summary PNG**: [`artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png`](artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png)
+
 ---
 
 ## 🏆 3. How to Submit `pilot.py` and `policy.pt` in Class
@@ -122,7 +141,7 @@ All experimental reports (`README.md`), high-resolution telemetry plots (`*.png`
 | **Exp 07**: Track A $G^2$ Quintic Spline | [`experiment_07_track_a_g2_spline/README.md`](artifacts/experiment_07_track_a_g2_spline/README.md) | [`track_a_g2_comparison.png`](artifacts/experiment_07_track_a_g2_spline/track_a_g2_comparison.png) | — |
 | **Exp 08**: Track A 6m Chest LiDAR | [`experiment_08_track_a_lidar_exploration/README.md`](artifacts/experiment_08_track_a_lidar_exploration/README.md) | [`track_a_lidar_random_mazes.png`](artifacts/experiment_08_track_a_lidar_exploration/track_a_lidar_random_mazes.png) | — |
 | **Exp 09**: Track A `--random-ends` | [`experiment_09_track_a_random_ends/README.md`](artifacts/experiment_09_track_a_random_ends/README.md) | [`track_a_random_ends_comparison.png`](artifacts/experiment_09_track_a_random_ends/track_a_random_ends_comparison.png) | — |
-| **Exp 10**: Track A Multi-Hazard & Slalom | [`experiment_10_track_a_hazard_slalom/README.md`](artifacts/experiment_10_track_a_hazard_slalom/README.md) | [`level7_short_route_verification.png`](artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png)<br>[`track_a_hazard_slalom_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)<br>[`spike_isolation_method1_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png) | [`run/level7_short_route_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4)<br>[`run/spike_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/spike_course_walk.mp4)<br>[`run/trackA_l7_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/trackA_l7_course_walk.mp4) |
+| **Exp 10**: Track A Multi-Hazard & Slalom | [`experiment_10_track_a_hazard_slalom/README.md`](artifacts/experiment_10_track_a_hazard_slalom/README.md) | [`level7_short_route_verification.png`](artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png)<br>[`robot_perception_planning_keyframes.png`](artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png)<br>[`track_a_hazard_slalom_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)<br>[`spike_isolation_method1_comparison.png`](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png) | [`run/robot_perception_planning_viz.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4)<br>[`run/level7_short_route_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/level7_short_route_walk.mp4)<br>[`run/spike_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/spike_course_walk.mp4)<br>[`run/trackA_l7_course_walk.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/trackA_l7_course_walk.mp4) |
 
 ---
 
@@ -131,8 +150,12 @@ All experimental reports (`README.md`), high-resolution telemetry plots (`*.png`
 ### 1. Level 7 Direct Short-Route Traversal (`58.1 s` on Seed 2026 & `56.3 s` on Seed 42, `0 Falls`)
 ![Level 7 Short Route Verification](artifacts/experiment_10_track_a_hazard_slalom/level7_short_route_verification.png)
 
-### 2. Full Level 7 & Level 9 Multi-Hazard Benchmark (`4/4 Goal Reached, 0 Falls`)
+### 2. G1 Robot Perception, Online Fog-of-War Discovery & G2 Spline Planning Keyframes
+![Robot Perception & Planning Keyframes](artifacts/experiment_10_track_a_hazard_slalom/robot_perception_planning_keyframes.png)
+*(Full 1600x900 20 fps dashboard video with live LiDAR fan, 3.2m 3D height scanner, A* / $G^2$ spline, cmd_vel vector overlays, 3D simulation camera, and live gauges available at [`artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4`](artifacts/experiment_10_track_a_hazard_slalom/run/robot_perception_planning_viz.mp4))*
+
+### 3. Full Level 7 & Level 9 Multi-Hazard Benchmark (`4/4 Goal Reached, 0 Falls`)
 ![Track A Multi-Hazard Comparison](artifacts/experiment_10_track_a_hazard_slalom/track_a_hazard_slalom_comparison.png)
 
-### 3. Isolated Spike & 2-Bed Opposing Slalom Course (`4/4 Cleared, 0 Falls`)
+### 4. Isolated Spike & 2-Bed Opposing Slalom Course (`4/4 Cleared, 0 Falls`)
 ![Spike & Slalom Isolation Comparison](artifacts/experiment_10_track_a_hazard_slalom/spike_isolation_method1_comparison.png)
