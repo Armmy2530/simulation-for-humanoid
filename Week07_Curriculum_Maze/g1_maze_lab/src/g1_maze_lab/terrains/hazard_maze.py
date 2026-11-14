@@ -177,14 +177,45 @@ def _routes_ok(walls: np.ndarray, routes: tuple[list, ...], cfg: HazardMazeTerra
     )
 
 
+CUSTOM_10X10_ASCII = """
++-+-+-+-+-+-+-+-+-+-+
+|         |   |    G|
++ +-+-+-+ + + + + + +
+| |     | | | | | | |
++ +-+-+ + + + +-+ + +
+|     | |   |     | |
++ +-+ + +-+-+-+-+-+ +
+| |   |     |     | |
++ + +-+-+ + + + +-+ +
+| | |     |   | |   |
++-+ + +-+-+-+-+ + +-+
+|   |     |     | | |
++ +-+-+-+ +-+-+ + + +
+| |     |     | | | |
++ + +-+ +-+-+ + + + +
+| |   |       | | | |
++ + + +-+-+-+-+-+ + +
+| | |           | | |
++ + +-+-+-+-+-+ + + +
+|S            |     |
++-+-+-+-+-+-+-+-+-+-+
+"""
+
+
 def hazard_maze_terrain(difficulty: float, cfg: HazardMazeTerrainCfg) -> tuple[list[trimesh.Trimesh], np.ndarray]:
     """Maze walls + a floor with gaps / rough boxes, and the ice tiles (handed to :class:`HazardTerrainGenerator`)."""
+    import os
+
     n, c = cfg.num_cells, cfg.cell_size
     seed = getattr(cfg, "seed", None)
     rng = np.random.default_rng(None if seed is None else seed + int(difficulty * 1e6))
     routes = None
     start, goal = (0, 0), (n - 1, n - 1)
-    if cfg.layout is not None:
+    custom_10x10 = os.environ.get("MAZE_CUSTOM_10X10") == "1" and n == 10
+    if custom_10x10:
+        walls = parse_layout(CUSTOM_10X10_ASCII)
+        routes = route_pair(walls, start, goal)
+    elif cfg.layout is not None:
         walls = parse_layout(cfg.layout)
     else:
         for _ in range(cfg.max_tries):
@@ -228,7 +259,28 @@ def hazard_maze_terrain(difficulty: float, cfg: HazardMazeTerrainCfg) -> tuple[l
         return [cand[i] for i in rng.permutation(len(cand))[:k]]
 
     ice, rough = [], []
-    if cfg.route_split and routes is not None:
+    if custom_10x10:
+        gaps = [(3, 1, 0), (8, 3, 1)]
+        gap_widths = np.array([0.185, 0.185], dtype=float)
+        ramps = [(5, 1, 0), (9, 6, 1), (1, 5, 1), (0, 8, 1), (1, 9, 0)]
+        ramp_heights = np.array([0.27, 0.28, 0.11, 0.15, 0.15], dtype=float)
+        ice = [(3, 0), (2, 2), (6, 2), (5, 7), (8, 7), (7, 8), (8, 8)]
+        rough = [
+            (7, 0), (8, 0), (2, 1), (4, 1), (6, 1), (7, 1), (0, 2), (1, 2), (8, 2),
+            (1, 4), (4, 4), (8, 4), (8, 5), (9, 5), (9, 7), (2, 8), (0, 9), (4, 9), (6, 9),
+        ]
+        spikes = [
+            ((1, 1, 1), "lane"),
+            ((0, 3, 1), "slalom"),
+            ((1, 7, 0), "lane"),
+            ((4, 8, 1), "lane"),
+            ((8, 1, 1), "lane"),
+            ((9, 8, 1), "slalom"),
+        ]
+        spike_side = np.array([1.0, -1.0, -1.0, -1.0, 1.0, -1.0], dtype=float)
+        spike_reach = np.full(len(spikes), -0.05, dtype=float)
+        slalom_reach = np.full(len(spikes), -0.05, dtype=float)
+    elif cfg.route_split and routes is not None:
         short, long = routes
         short_only = [x for x in short if x not in long]
         long_only = [x for x in long if x not in short]
@@ -277,10 +329,11 @@ def hazard_maze_terrain(difficulty: float, cfg: HazardMazeTerrainCfg) -> tuple[l
         ramp_heights = rng.uniform(*cfg.ramp_height_range, size=len(ramps))
     # spike bed: across the corridor from the wall on one side to `reach` past the middle, along it from u0 to u1
     # (lane: one bed, centred; slalom: two shorter beds on opposite sides with a gap between them)
-    n_cells_spk = len(spikes)
-    spike_side = rng.choice((-1.0, 1.0), size=n_cells_spk)
-    spike_reach = rng.uniform(*cfg.spike_reach_range, size=n_cells_spk)
-    slalom_reach = rng.uniform(*cfg.slalom_reach_range, size=n_cells_spk)
+    if not custom_10x10:
+        n_cells_spk = len(spikes)
+        spike_side = rng.choice((-1.0, 1.0), size=n_cells_spk)
+        spike_reach = rng.uniform(*cfg.spike_reach_range, size=n_cells_spk)
+        slalom_reach = rng.uniform(*cfg.slalom_reach_range, size=n_cells_spk)
     hw, half = 0.5 * (cfg.cell_size - cfg.wall_thickness), 0.5 * cfg.spike_length
     sl_half, sl_gap = 0.5 * cfg.slalom_length, 0.5 * cfg.slalom_gap
     spike_rects = []  # (i, j, a, rect)

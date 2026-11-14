@@ -200,6 +200,8 @@ class MazeAutopilot:
         self.cell_gap_zones = [set() for _ in range(num_envs)]
         self.replan_needed = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self.walls_updated = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.visit_counts = torch.zeros((num_envs, num_cells, num_cells), dtype=torch.int32, device=device)
+        self._last_visited_cell = [None] * num_envs
         self.sprint_speed = float(os.environ.get("MAZE_SPRINT_SPEED", "0.76"))
         self.debug = False
 
@@ -313,11 +315,16 @@ class MazeAutopilot:
                     z_mid = elev_pts & (u >= -0.25) & (u <= 0.25)
                     z_plus = elev_pts & (u >= 0.25) & (u <= 0.92)
 
-                    is_ramp = False
-                    if has_neg_elev and has_pos_elev:
-                        is_ramp = True
-                    elif centerline_elev >= 4 and not (flat_neg or flat_pos):
-                        is_ramp = True
+                    # Check Ramp vs Spike Bed:
+                    # A ramp spans BOTH -v and +v within the SAME longitudinal slice (z_minus, z_mid, or z_plus),
+                    # whereas a 2-bed slalom has Bed 1 on one side in z_minus and Bed 2 on the opposite side in z_plus
+                    # (with flat floor in z_mid and on the opposite lane of each bed).
+                    ramp_in_minus = bool(((z_minus & (v < -0.24)).sum() >= 2) and ((z_minus & (v > 0.24)).sum() >= 2))
+                    ramp_in_mid = bool(((z_mid & (v < -0.24)).sum() >= 2) and ((z_mid & (v > 0.24)).sum() >= 2))
+                    ramp_in_plus = bool(((z_plus & (v < -0.24)).sum() >= 2) and ((z_plus & (v > 0.24)).sum() >= 2))
+                    is_ramp = ramp_in_minus or ramp_in_mid or ramp_in_plus or (
+                        centerline_elev >= 4 and not (flat_neg or flat_pos)
+                    )
 
                     if is_ramp:
                         if (i, j) not in self.cell_ramp_zones[e]:
@@ -396,8 +403,8 @@ class MazeAutopilot:
                             if new_zone is not None and prev_zone != new_zone:
                                 self.cell_spike_zones[e][(i, j)] = new_zone
                                 self.replan_needed[e] = True
-                                if self.use_fork_arbitrator and new_zone["kind"] == "slalom" and self.cell_hazard_cost[e, i, j] < 25.0:
-                                    self.cell_hazard_cost[e, i, j] = 25.0
+                                if self.use_fork_arbitrator and new_zone["kind"] == "slalom" and self.cell_hazard_cost[e, i, j] < 6.0:
+                                    self.cell_hazard_cost[e, i, j] = 6.0
                         else:
                             # Baseline / Exp 10 old logic: overwrite without persistence & no spike replan trigger
                             c_safe = centroid_safe if centroid_safe is not None else 0.0
@@ -409,8 +416,8 @@ class MazeAutopilot:
                                     "v_plus": v_plus_safe,
                                     "v_centroid": c_safe,
                                 }
-                                if self.use_fork_arbitrator and self.cell_hazard_cost[e, i, j] < 25.0:
-                                    self.cell_hazard_cost[e, i, j] = 25.0
+                                if self.use_fork_arbitrator and self.cell_hazard_cost[e, i, j] < 6.0:
+                                    self.cell_hazard_cost[e, i, j] = 6.0
                                     self.replan_needed[e] = True
                             elif v_minus_safe is not None or v_plus_safe is not None or centroid_safe is not None:
                                 v_safe = v_minus_safe if v_minus_safe is not None else (v_plus_safe if v_plus_safe is not None else c_safe)
@@ -472,35 +479,63 @@ class MazeAutopilot:
         self, pos_xy: torch.Tensor, lidar_dist: torch.Tensor, lidar_yaw: torch.Tensor
     ):
         """Update occupancy grid self.walls using 72-ray 6m LiDAR.
-        
-        Fixes Bugs A, B, C:
-        - Bug A: Max-range rays (dist >= 5.8m up to 6.0m) are ray-marched up to 5.85m to clear open corridors.
-        - Bug B: Angled rays (|dx| > 0.30, |dy| > 0.30) with wide aperture (|offset| < 0.52) clear doorways 2-3 cells ahead.
-        - Bug C: Wall hit detection uses wide aperture (|offset| < 0.78) and shallow incidence (|cos| > 0.22)
-          to reliably detect side walls and dead-end back walls up to 6.0m away.
+
+        Includes:
+        - Uniform angular grid yaw reconstruction for max-range / non-finite rays (fixes atan2(inf, inf) = +45 deg bug).
+        - Tightened incidence/aperture/hit-count filtering & ramp/spike safety to eliminate false walls.
+        - 5.85m free-space ray marching along true corridor directions.
         """
         N = pos_xy.shape[0]
         n, c = self.n, self.c
+        R = lidar_dist.shape[1]
         px = pos_xy[:, 0]
         py = pos_xy[:, 1]
-
-        # Rays that hit obstacles within valid range
-        hit_mask = (lidar_dist < 5.85) & (lidar_dist > 0.20)
-        # All valid rays for free-space ray marching (including 6.0m max-range unobstructed rays)
-        ray_mask = (lidar_dist > 0.50) & torch.isfinite(lidar_dist)
-        hx = pos_xy[:, None, 0] + lidar_dist * torch.cos(lidar_yaw)
-        hy = pos_xy[:, None, 1] + lidar_dist * torch.sin(lidar_yaw)
+        idx_grid = torch.arange(R, device=lidar_dist.device, dtype=lidar_yaw.dtype)
+        step_base = 2.0 * math.pi / float(max(R, 1))
 
         for e in range(N):
             p_x = float(px[e].item())
             p_y = float(py[e].item())
+            dist_e = lidar_dist[e]
+            yaw_e = lidar_yaw[e]
 
-            # 1. Wall hit classification (Bug C)
-            hits_e = hit_mask[e]
-            if hits_e.any():
-                h_x = hx[e, hits_e].detach().cpu().numpy()
-                h_y = hy[e, hits_e].detach().cpu().numpy()
-                y_e = lidar_yaw[e, hits_e].detach().cpu().numpy()
+            # Reconstruct true world yaw for max-range rays (where ray_hits_w is inf and atan2(inf,inf)=pi/4)
+            valid_ang = (dist_e < 5.85) & (dist_e > 0.05) & torch.isfinite(yaw_e)
+            has_valid_ang = bool(valid_ang.any().item())
+            if has_valid_ang:
+                valid_idxs = torch.nonzero(valid_ang, as_tuple=False).squeeze(1)
+                i0 = int(valid_idxs[0].item())
+                yaw0 = float(yaw_e[i0].item())
+                step_yaw = step_base
+                if len(valid_idxs) >= 2:
+                    i1 = int(valid_idxs[1].item())
+                    yaw1 = float(yaw_e[i1].item())
+                    err_pos = abs(math.atan2(math.sin(yaw1 - (yaw0 + (i1 - i0) * step_base)), math.cos(yaw1 - (yaw0 + (i1 - i0) * step_base))))
+                    err_neg = abs(math.atan2(math.sin(yaw1 - (yaw0 - (i1 - i0) * step_base)), math.cos(yaw1 - (yaw0 - (i1 - i0) * step_base))))
+                    if err_neg < err_pos:
+                        step_yaw = -step_base
+                yaw_recon = yaw0 + (idx_grid - float(i0)) * step_yaw
+                bad_ang = (dist_e >= 100.0) | ~torch.isfinite(yaw_e)
+                yaw_corr = torch.where(bad_ang, yaw_recon, yaw_e)
+            else:
+                yaw_corr = yaw_e
+
+            cur_ci = int(round(p_x / c))
+            cur_cj = int(round(p_y / c))
+            on_hazard_cell = (
+                (cur_ci, cur_cj) in self.cell_ramp_zones[e]
+                or (cur_ci, cur_cj) in self.cell_spike_zones[e]
+            )
+
+            # 1. Wall hit classification (skip when robot is pitched/on a ramp or spike cell)
+            hits_e = (dist_e < 5.85) & (dist_e > 0.20) & torch.isfinite(yaw_corr)
+            if not on_hazard_cell and hits_e.any():
+                hx_e = p_x + dist_e[hits_e] * torch.cos(yaw_corr[hits_e])
+                hy_e = p_y + dist_e[hits_e] * torch.sin(yaw_corr[hits_e])
+                h_x = hx_e.detach().cpu().numpy()
+                h_y = hy_e.detach().cpu().numpy()
+                y_e = yaw_corr[hits_e].detach().cpu().numpy()
+                haz_cells = self.cell_ramp_zones[e] | self.cell_spike_zones[e].keys()
 
                 for rx, ry, yaw in zip(h_x, h_y, y_e):
                     cos_ray = math.cos(float(yaw))
@@ -509,58 +544,57 @@ class MazeAutopilot:
                     # Vertical walls at x = (k + 0.5) * c
                     k_cand = int(round((rx / c) - 0.5))
                     x_wall = (k_cand + 0.5) * c
-                    if abs(rx - x_wall) <= 0.20:
+                    if abs(rx - x_wall) <= 0.16:
                         j = int(round(ry / c))
-                        if 0 <= j < n and -1 <= k_cand <= n - 1:
-                            offset = ry - j * c
-                            if abs(offset) < 0.78 and abs(cos_ray) > 0.22:
-                                if 0 <= k_cand < n:
+                        if 0 <= j < n and 0 <= k_cand < n - 1:
+                            if (k_cand, j) not in haz_cells and (k_cand + 1, j) not in haz_cells:
+                                offset = ry - j * c
+                                if abs(offset) < 0.65 and abs(cos_ray) > 0.30:
                                     self.wall_hit_counts[e, k_cand, j, 0] += 1
-                                    if self.wall_hit_counts[e, k_cand, j, 0] >= 2 and self.walls[e, k_cand, j, 0] != 1:
+                                    self.wall_hit_counts[e, k_cand + 1, j, 2] += 1
+                                    if self.wall_hit_counts[e, k_cand, j, 0] >= 3 and self.walls[e, k_cand, j, 0] == -1:
                                         self.walls[e, k_cand, j, 0] = 1
                                         self.walls_updated[e] = True
-                                if 0 <= k_cand + 1 < n:
-                                    self.wall_hit_counts[e, k_cand + 1, j, 2] += 1
-                                    if self.wall_hit_counts[e, k_cand + 1, j, 2] >= 2 and self.walls[e, k_cand + 1, j, 2] != 1:
+                                    if self.wall_hit_counts[e, k_cand + 1, j, 2] >= 3 and self.walls[e, k_cand + 1, j, 2] == -1:
                                         self.walls[e, k_cand + 1, j, 2] = 1
                                         self.walls_updated[e] = True
 
                     # Horizontal walls at y = (m + 0.5) * c
                     m_cand = int(round((ry / c) - 0.5))
                     y_wall = (m_cand + 0.5) * c
-                    if abs(ry - y_wall) <= 0.20:
+                    if abs(ry - y_wall) <= 0.16:
                         i = int(round(rx / c))
-                        if 0 <= i < n and -1 <= m_cand <= n - 1:
-                            offset = rx - i * c
-                            if abs(offset) < 0.78 and abs(sin_ray) > 0.22:
-                                if 0 <= m_cand < n:
+                        if 0 <= i < n and 0 <= m_cand < n - 1:
+                            if (i, m_cand) not in haz_cells and (i, m_cand + 1) not in haz_cells:
+                                offset = rx - i * c
+                                if abs(offset) < 0.65 and abs(sin_ray) > 0.30:
                                     self.wall_hit_counts[e, i, m_cand, 1] += 1
-                                    if self.wall_hit_counts[e, i, m_cand, 1] >= 2 and self.walls[e, i, m_cand, 1] != 1:
+                                    self.wall_hit_counts[e, i, m_cand + 1, 3] += 1
+                                    if self.wall_hit_counts[e, i, m_cand, 1] >= 3 and self.walls[e, i, m_cand, 1] == -1:
                                         self.walls[e, i, m_cand, 1] = 1
                                         self.walls_updated[e] = True
-                                if 0 <= m_cand + 1 < n:
-                                    self.wall_hit_counts[e, i, m_cand + 1, 3] += 1
-                                    if self.wall_hit_counts[e, i, m_cand + 1, 3] >= 2 and self.walls[e, i, m_cand + 1, 3] != 1:
+                                    if self.wall_hit_counts[e, i, m_cand + 1, 3] >= 3 and self.walls[e, i, m_cand + 1, 3] == -1:
                                         self.walls[e, i, m_cand + 1, 3] = 1
                                         self.walls_updated[e] = True
 
-            # 2. Free space ray marching (Bugs A & B)
-            rays_e = ray_mask[e]
+            # 2. Free space ray marching along true angles
+            rays_e = (dist_e > 0.50) & torch.isfinite(dist_e) & torch.isfinite(yaw_corr)
+            if not has_valid_ang:
+                rays_e = rays_e & (dist_e < 100.0)
             if rays_e.any():
-                d_e = lidar_dist[e, rays_e].detach().cpu().numpy()
-                y_e = lidar_yaw[e, rays_e].detach().cpu().numpy()
+                d_e = dist_e[rays_e].detach().cpu().numpy()
+                y_e = yaw_corr[rays_e].detach().cpu().numpy()
 
                 for dist, yaw in zip(d_e, y_e):
-                    # Bug A fix: max-range rays (dist >= 5.85m) march all the way through open corridors!
-                    march_limit = 5.85 if dist >= 5.85 else max(0.0, float(dist) - 0.20)
+                    march_limit = 5.85 if dist >= 5.85 else max(0.0, float(dist) - 0.25)
                     if march_limit < 0.5:
                         continue
                     dx = math.cos(float(yaw))
                     dy = math.sin(float(yaw))
 
-                    # Vertical grid lines (Bug B: abs(dx) > 0.30, abs(offset) < 0.52)
+                    # Vertical grid lines
                     if abs(dx) > 0.30:
-                        for k in range(-1, n):
+                        for k in range(0, n - 1):
                             xw = (k + 0.5) * c
                             s = (xw - p_x) / dx
                             if 0.15 < s < march_limit:
@@ -569,16 +603,16 @@ class MazeAutopilot:
                                 if 0 <= j < n:
                                     offset = y_cross - j * c
                                     if abs(offset) < 0.52:
-                                        if 0 <= k < n and self.walls[e, k, j, 0] == -1:
+                                        if self.walls[e, k, j, 0] == -1:
                                             self.walls[e, k, j, 0] = 0
                                             self.walls_updated[e] = True
-                                        if 0 <= k + 1 < n and self.walls[e, k + 1, j, 2] == -1:
+                                        if self.walls[e, k + 1, j, 2] == -1:
                                             self.walls[e, k + 1, j, 2] = 0
                                             self.walls_updated[e] = True
 
-                    # Horizontal grid lines (Bug B: abs(dy) > 0.30, abs(offset) < 0.52)
+                    # Horizontal grid lines
                     if abs(dy) > 0.30:
-                        for m in range(-1, n):
+                        for m in range(0, n - 1):
                             yw = (m + 0.5) * c
                             s = (yw - p_y) / dy
                             if 0.15 < s < march_limit:
@@ -587,17 +621,17 @@ class MazeAutopilot:
                                 if 0 <= i < n:
                                     offset = x_cross - i * c
                                     if abs(offset) < 0.52:
-                                        if 0 <= m < n and self.walls[e, i, m, 1] == -1:
+                                        if self.walls[e, i, m, 1] == -1:
                                             self.walls[e, i, m, 1] = 0
                                             self.walls_updated[e] = True
-                                        if 0 <= m + 1 < n and self.walls[e, i, m + 1, 3] == -1:
+                                        if self.walls[e, i, m + 1, 3] == -1:
                                             self.walls[e, i, m + 1, 3] = 0
                                             self.walls_updated[e] = True
 
     def update_walls_from_height_scan_multicell(
         self, pos_xy: torch.Tensor, hits_xy: torch.Tensor, hits_z: torch.Tensor, ground_z: float = 0.0
     ):
-        """Analyze 3.2m x 3.2m height scanner to detect walls and open doorways for all cells within 1.45m."""
+        """Analyze 3.2m x 3.2m height scanner to detect walls and self-heal open doorways for all cells within 1.45m."""
         import numpy as np
 
         N = pos_xy.shape[0]
@@ -609,6 +643,7 @@ class MazeAutopilot:
             py = float(pos_xy[e, 1].item())
             h_xy = hits_xy[e].detach().cpu().numpy()
             h_z = hits_z[e].detach().cpu().numpy()
+            finite_pts = np.isfinite(h_xy[:, 0]) & np.isfinite(h_xy[:, 1]) & np.isfinite(h_z)
 
             cur_ci = int(round(px / c))
             cur_cj = int(round(py / c))
@@ -632,7 +667,7 @@ class MazeAutopilot:
                         across = rel_x * dy - rel_y * dx
 
                         # Check 1: Blocked wall detection (along +-0.15m, across +-0.65m, tall >= 3)
-                        in_wall_box = (np.abs(along - half) < 0.15) & (np.abs(across) < 0.65)
+                        in_wall_box = finite_pts & (np.abs(along - half) < 0.15) & (np.abs(across) < 0.65)
                         tall_pts = (h_z > ground_z + 0.5) & in_wall_box
                         tall_count = np.count_nonzero(tall_pts)
 
@@ -646,15 +681,18 @@ class MazeAutopilot:
                                 self.walls_updated[e] = True
                         elif tall_count == 0 and 0 <= ni < n and 0 <= nj < n:
                             # Check 2: Open doorway detection (along +-0.18m, across +-0.55m, total rays >= 8)
-                            in_door_box = (np.abs(along - half) < 0.18) & (np.abs(across) < 0.55)
+                            # Self-heal any false wall (!= 0 -> 0) and reset LiDAR wall hit counters.
+                            in_door_box = finite_pts & (np.abs(along - half) < 0.18) & (np.abs(across) < 0.55)
                             total_rays = np.count_nonzero(in_door_box)
                             if total_rays >= 8:
-                                if self.walls[e, ci, cj, d] == -1:
+                                if self.walls[e, ci, cj, d] != 0:
                                     self.walls[e, ci, cj, d] = 0
                                     self.walls_updated[e] = True
-                                if self.walls[e, ni, nj, (d + 2) % 4] == -1:
+                                if self.walls[e, ni, nj, (d + 2) % 4] != 0:
                                     self.walls[e, ni, nj, (d + 2) % 4] = 0
                                     self.walls_updated[e] = True
+                                self.wall_hit_counts[e, ci, cj, d] = 0
+                                self.wall_hit_counts[e, ni, nj, (d + 2) % 4] = 0
 
     def prune_dead_ends(self, env_id: int, cur_cell: tuple[int, int]) -> set[tuple[int, int]]:
         """Identify dead ends and recursively propagate blocked edges backward."""
@@ -739,16 +777,17 @@ class MazeAutopilot:
         raise ValueError(f"unknown strategy {self.strategy!r}")
 
     def plan_full_path(self, start_cell: tuple[int, int] | list[int], env_id: int = 0, turn_penalty: float = 0.05) -> list[tuple[int, int]]:
-        """A* search with turn penalties and dead-end avoidance for minimum-time path execution."""
+        """A* search with Manhattan heuristic, visit penalty, turn penalties, and dead-end avoidance."""
         import heapq
-        import numpy as np
 
         n = self.n
         walls = self.walls[env_id].cpu().numpy()
+        visits = self.visit_counts[env_id].cpu().numpy()
         start = tuple(int(v) for v in start_cell)
         goal = self.goal
         has_moved = int(self.cells_walked[env_id].item()) > 0
         dead_ends = self.prune_dead_ends(env_id, start)
+        norm = float(max(1, abs(self.start[0] - goal[0]) + abs(self.start[1] - goal[1])))
 
         # Priority queue: (f_score, g_score, (i, j), heading)
         pq = [(0.0, 0.0, start, int(self.heading[env_id].item()))]
@@ -775,11 +814,15 @@ class MazeAutopilot:
                     rev_cost = 0.08 if (curr == start and has_moved and d == (h + 2) % 4) else 0.0
                     hazard_cost = float(self.cell_hazard_cost[env_id, ni, nj].item())
                     dead_cost = 50.0 if (ni, nj) in dead_ends else 0.0
-                    new_g = g + 1.0 + turn_cost + unk_cost + rev_cost + hazard_cost + dead_cost
+                    visit_cost = 0.15 * float(visits[ni, nj])
+                    cross_n = abs((ni - goal[0]) * (self.start[1] - goal[1]) - (nj - goal[1]) * (self.start[0] - goal[0])) / norm
+                    diag_cost = 0.02 * float(cross_n)
+                    new_g = g + 1.0 + turn_cost + unk_cost + rev_cost + hazard_cost + dead_cost + visit_cost + diag_cost
                     st = ((ni, nj), d)
                     if new_g < g_costs.get(st, 1e9) - 1e-6:
                         g_costs[st] = new_g
-                        h_cost = float(np.sqrt((ni - goal[0]) ** 2 + (nj - goal[1]) ** 2))
+                        manhattan = abs(ni - goal[0]) + abs(nj - goal[1])
+                        h_cost = 1.001 * float(manhattan) + 0.001 * float(cross_n)
                         heapq.heappush(pq, (new_g + h_cost, new_g, (ni, nj), d))
                         came_from[st] = (curr, h)
 
@@ -846,7 +889,8 @@ class MazeAutopilot:
                         is_spike_cell.append(False)
             else:
                 pt = [c_pt[0] * self.c, c_pt[1] * self.c]
-                # Pre-align approach corner waypoint if turning into a spike corridor
+                extra_pre_pt = None
+                # Pre-align approach waypoint when entering a spike corridor (both turning and straight)
                 if self.spike_avoid_mode in ("slalom_s_curve", "method1_lead_in_out", "method1", "holonomic_vy") and k + 1 < len(cell_path):
                     next_c = tuple(cell_path[k + 1])
                     if next_c in spike_zones:
@@ -870,19 +914,30 @@ class MazeAutopilot:
                                 v_raw = sz.get("v_safe", v_lat)
                                 v_entry = v_lat if v_raw >= 0 else -v_lat
 
+                            is_corner_into_spike = False
                             if k > 0:
                                 prev_c = cell_path[k - 1]
                                 di_in = cell_tuple[0] - prev_c[0]
                                 dj_in = cell_tuple[1] - prev_c[1]
                                 if (di_in != 0 and di_next == 0) or (dj_in != 0 and dj_next == 0):
+                                    is_corner_into_spike = True
                                     # Corner turn into spike corridor: shift turn point to line up with entry lane
                                     if axis_next == 0:
                                         pt[1] = next_c[1] * self.c + v_entry
                                     else:
                                         pt[0] = next_c[0] * self.c + v_entry
+                            if not is_corner_into_spike:
+                                # Straight approach into spike/slalom corridor: add pre-entry lane alignment in current cell
+                                if axis_next == 0:
+                                    extra_pre_pt = [cell_tuple[0] * self.c + 0.55 * s_dir_next, next_c[1] * self.c + v_entry]
+                                else:
+                                    extra_pre_pt = [next_c[0] * self.c + v_entry, cell_tuple[1] * self.c + 0.55 * s_dir_next]
 
                 raw_pts.append(np.array(pt, dtype=float))
                 is_spike_cell.append(False)
+                if extra_pre_pt is not None:
+                    raw_pts.append(np.array(extra_pre_pt, dtype=float))
+                    is_spike_cell.append(True)
 
         wpts = [raw_pts[0]]
         wpts_is_spike = [is_spike_cell[0]]
@@ -1089,14 +1144,14 @@ class MazeAutopilot:
         yaw_err = torch.atan2(torch.sin(yaw_err), torch.cos(yaw_err))
 
         # Heading alignment and cornering velocity: maintain smooth momentum through turns
-        # Normal cornering (|yaw_err| <= 75 deg): full speed profile (100% Exp 07/08 momentum)
-        # In-place pivot (|yaw_err| >= 95 deg): in_place_scale = 0 -> zero forward/lateral drift
+        # Normal cornering (|yaw_err| <= 64 deg): full speed profile (100% Exp 07/08 momentum)
+        # In-place pivot (|yaw_err| >= 82 deg): in_place_scale = 0 -> zero forward/lateral drift
         cos_align = torch.clamp(torch.cos(yaw_err), min=0.0)
         # Straight-corridor sprint boost: when heading error is small and path curvature is low
         is_straight = (torch.abs(kappa_ff) < 0.12) & (torch.abs(yaw_err) < 0.15)
         v_max = torch.where(is_straight, torch.full_like(yaw_err, self.sprint_speed), torch.full_like(yaw_err, self.speed))
         v_des = self.min_speed + (v_max - self.min_speed) * (cos_align ** 1.2)
-        in_place_scale = torch.clamp((math.radians(95.0) - torch.abs(yaw_err)) / math.radians(20.0), 0.0, 1.0)
+        in_place_scale = torch.clamp((math.radians(82.0) - torch.abs(yaw_err)) / math.radians(18.0), 0.0, 1.0)
         v_des = v_des * in_place_scale
 
         if self.use_astar and self.curve_mode == "g2_quintic":
@@ -1212,41 +1267,47 @@ class MazeAutopilot:
                         continue
 
                 # Active spike cell determination:
-                # Check current cell, target cell, or up to 2 cells ahead in planned path
+                # Only activate when inside spk_cell or target cell directly along its approach axis
                 spk_cell = None
                 if c_cur in self.cell_spike_zones[e]:
                     spk_cell = c_cur
                 elif c_tgt in self.cell_spike_zones[e]:
                     spk_cell = c_tgt
-                elif self.current_cell_paths[e] is not None:
-                    for cp in self.current_cell_paths[e][:3]:
-                        cp_t = tuple(cp)
-                        if cp_t in self.cell_spike_zones[e]:
-                            spk_cell = cp_t
-                            break
 
                 if spk_cell is not None:
                     spk = self.cell_spike_zones[e][spk_cell]
                     axis = spk.get("axis", 0)
                     di_h, dj_h = DIRS[int(self.heading[e].item())]
+                    c_path = self.current_cell_paths[e]
+                    if c_path and spk_cell in c_path:
+                        idx_s = c_path.index(spk_cell)
+                        if idx_s > 0:
+                            di_h = spk_cell[0] - c_path[idx_s - 1][0]
+                            dj_h = spk_cell[1] - c_path[idx_s - 1][1]
+                        elif idx_s + 1 < len(c_path):
+                            di_h = c_path[idx_s + 1][0] - spk_cell[0]
+                            dj_h = c_path[idx_s + 1][1] - spk_cell[1]
                     s_dir = di_h if axis == 0 else dj_h
                     if s_dir != 0:
                         si, sj = spk_cell
+                        is_direct_approach = (c_cur == spk_cell) or (c_cur == (si - di_h, sj - dj_h))
                         u_r = (pos_xy[e, 0].item() - si * self.c) if axis == 0 else (pos_xy[e, 1].item() - sj * self.c)
                         v_r = (pos_xy[e, 1].item() - sj * self.c) if axis == 0 else (pos_xy[e, 0].item() - si * self.c)
                         u_prog = u_r * s_dir
 
-                        # Active corridor window: from approach (-1.45 m) through cell exit (+0.95 m)
-                        if -1.45 <= u_prog <= 0.95:
+                        # Active corridor window: from approach (-1.65 m) through cell exit (+0.95 m for lane, +0.82 m for slalom)
+                        kind = spk.get("kind", "lane")
+                        u_exit_limit = 0.82 if kind == "slalom" else 0.95
+                        if is_direct_approach and abs(v_r) <= 1.05 and -1.65 <= u_prog <= u_exit_limit:
                             # Corridor travel heading
                             if axis == 0:
                                 corridor_yaw = 0.0 if s_dir > 0 else math.pi
                             else:
                                 corridor_yaw = (math.pi / 2.0) if s_dir > 0 else (-math.pi / 2.0)
 
-                            kind = spk.get("kind", "lane")
-                            v_along = float(self.speed)
-                            max_lead_deg = 15.0
+                            v_spk_cruise = min(0.60, float(self.speed))
+                            v_along = v_spk_cruise
+                            max_lead_deg = 28.0 if u_prog < -0.95 else 15.0
                             is_crossing = False
 
                             if kind == "lane":
@@ -1257,13 +1318,17 @@ class MazeAutopilot:
 
                                 err_v = v_des_lat - v_r
                                 abs_err_v = abs(err_v)
-                                if abs_err_v > 0.25:
+                                if u_prog < -0.95 and u_prog >= -1.25 and abs_err_v > 0.20:
+                                    v_along = 0.14
+                                    max_lead_deg = 35.0
+                                    fast_decel_mask[e] = True
+                                elif abs_err_v > 0.25:
                                     v_along = 0.22
                                     fast_decel_mask[e] = True
                                 elif abs_err_v > 0.12:
                                     v_along = 0.32
                                 else:
-                                    v_along = float(self.speed)
+                                    v_along = v_spk_cruise
 
                             elif kind == "slalom":
                                 v_lat = 0.50
@@ -1276,15 +1341,24 @@ class MazeAutopilot:
                                 v_entry = v_minus if s_dir > 0 else v_plus
                                 v_exit = v_plus if s_dir > 0 else v_minus
 
-                                in_exit_lane = abs(v_r - v_exit) <= 0.15
+                                in_exit_lane = abs(v_r - v_exit) <= 0.14
                                 if u_prog < -0.50:
                                     v_des_lat = v_entry
-                                    v_along = float(self.speed)
+                                    err_tmp = abs(v_des_lat - v_r)
+                                    if u_prog >= -1.25 and u_prog < -0.95 and err_tmp > 0.20:
+                                        v_along = 0.14
+                                        max_lead_deg = 35.0
+                                        fast_decel_mask[e] = True
+                                    elif err_tmp > 0.25:
+                                        v_along = 0.24
+                                        fast_decel_mask[e] = True
+                                    else:
+                                        v_along = v_spk_cruise
                                     is_crossing = False
                                     in_post_exit = False
-                                elif u_prog < -0.25:
+                                elif u_prog < -0.20:
                                     v_des_lat = v_entry
-                                    v_along = 0.30
+                                    v_along = 0.26
                                     fast_decel_mask[e] = True
                                     is_crossing = False
                                     in_post_exit = False
@@ -1337,7 +1411,7 @@ class MazeAutopilot:
                                     v_des[e] = 0.00  # Pivot back to corridor heading
                                     fast_decel_mask[e] = True
                                 else:
-                                    v_des[e] = float(self.speed)  # Walk straight past Bed 2 at full speed!
+                                    v_des[e] = 0.48 if u_prog > 0.55 else v_spk_cruise
 
                             else:
                                 # Normal lane corridor traversal
@@ -1357,7 +1431,7 @@ class MazeAutopilot:
 
                                 yaw_err = math.atan2(math.sin(psi_des - psi_cur), math.cos(psi_des - psi_cur))
                                 w_des[e] = max(-self.max_turn, min(self.max_turn, 2.6 * yaw_err))
-                                v_des[e] = max(0.20, min(self.speed, v_along))
+                                v_des[e] = max(0.12, min(v_spk_cruise, v_along))
 
                             v_y_des[e] = 0.0
 
@@ -1381,6 +1455,12 @@ class MazeAutopilot:
     def step(self, pos_xy: torch.Tensor, yaw: torch.Tensor, walls_now: torch.Tensor, dt: float) -> torch.Tensor:
         """Update the plan and return the velocity command. ``walls_now`` = sensed walls of the current cell."""
         cell = self.cell_of(pos_xy)
+        for e in range(self.num_envs):
+            cur_c = (int(cell[e, 0].item()), int(cell[e, 1].item()))
+            if self._last_visited_cell[e] != cur_c:
+                self.visit_counts[e, cur_c[0], cur_c[1]] += 1
+                self._last_visited_cell[e] = cur_c
+
         near_centre = torch.linalg.norm(pos_xy - self.centre_of(cell), dim=1) < self.turn_early
         arrived = near_centre & (cell == self.target).all(dim=1)
         # a turn picked early sees the far wall of the cell only at the edge of the scan: if the side we are
@@ -1396,7 +1476,8 @@ class MazeAutopilot:
                 if c_path is not None and len(c_path) >= 2:
                     cur_c = (int(cell[e, 0].item()), int(cell[e, 1].item()))
                     d_ends = self.prune_dead_ends(e, cur_c)
-                    for idx_p in range(len(c_path) - 1):
+                    start_idx = c_path.index(cur_c) if cur_c in c_path else 0
+                    for idx_p in range(start_idx, len(c_path) - 1):
                         c1, c2 = c_path[idx_p], c_path[idx_p + 1]
                         if tuple(c2) in d_ends:
                             plan_blocked[e] = True
@@ -1415,7 +1496,8 @@ class MazeAutopilot:
                 if not plan_blocked[e] and self.walls_updated[e] and c_path is not None and len(c_path) >= 3:
                     cur_c = (int(cell[e, 0].item()), int(cell[e, 1].item()))
                     new_path = self.plan_full_path(cur_c, e)
-                    if len(new_path) < len(c_path) - 1:
+                    rem_len = (len(c_path) - c_path.index(cur_c)) if cur_c in c_path else (len(c_path) - 1)
+                    if len(new_path) < rem_len:
                         plan_blocked[e] = True
 
         decide = self.need_decision | arrived | surprise | plan_blocked | self.replan_needed
@@ -1423,15 +1505,28 @@ class MazeAutopilot:
             idx = torch.nonzero(decide).squeeze(1)
             self.walls_updated[idx] = False
             # remember what we saw (and the same wall from the neighbour's side)
-            # Local 3D height scanner (scan_z) is the ultimate ground truth for cell[idx]
+            # Guard outer border walls and skip clearing walls outside the 3.2m height scanner range.
             for d, (di, dj) in enumerate(DIRS):
                 ci, cj = cell[idx, 0], cell[idx, 1]
                 val = walls_now[idx, d].to(torch.int8)
-                self.walls[idx, ci, cj, d] = val
                 ni, nj = ci + di, cj + dj
                 inside = (ni >= 0) & (ni < self.n) & (nj >= 0) & (nj < self.n)
-                k = idx[inside]
-                self.walls[k, ni[inside], nj[inside], (d + 2) % 4] = val[inside]
+                edge_x = ci.float() * self.c + 0.5 * self.c * float(di)
+                edge_y = cj.float() * self.c + 0.5 * self.c * float(dj)
+                edge_dist = torch.hypot(edge_x - pos_xy[idx, 0], edge_y - pos_xy[idx, 1])
+                can_write = inside & ((val == 1) | (edge_dist <= 0.75 * self.c))
+                if can_write.any():
+                    k = idx[can_write]
+                    v = val[can_write]
+                    ck_i, ck_j = ci[can_write], cj[can_write]
+                    nk_i, nk_j = ni[can_write], nj[can_write]
+                    self.walls[k, ck_i, ck_j, d] = v
+                    self.walls[k, nk_i, nk_j, (d + 2) % 4] = v
+                    cleared = v == 0
+                    if cleared.any():
+                        kc = k[cleared]
+                        self.wall_hit_counts[kc, ck_i[cleared], ck_j[cleared], d] = 0
+                        self.wall_hit_counts[kc, nk_i[cleared], nk_j[cleared], (d + 2) % 4] = 0
             open_sides = self.walls[idx, cell[idx, 0], cell[idx, 1]] == 0
             if self.debug and decide[0]:
                 print(
@@ -1509,8 +1604,10 @@ class MazeAutopilot:
         self.need_decision[env_ids] = True
         self.replan_needed[env_ids] = True
         self.cells_walked[env_ids] = 0
+        self.visit_counts[env_ids] = 0
         self.cmd[env_ids] = 0.0
         for e in env_ids.tolist():
+            self._last_visited_cell[e] = None
             self.smooth_wpts[e] = None
             self.smooth_curvatures[e] = None
             self.smooth_tangents[e] = None
@@ -1557,7 +1654,7 @@ class A4_Hazard_G2(MazeAutopilot):
         self.spike_avoid_mode = "slalom_s_curve"
         self.use_fork_arbitrator = True
         self.persist_map_on_reset = True
-        self.sprint_speed = float(os.environ.get("MAZE_SPRINT_SPEED", "0.76"))
+        self.sprint_speed = float(os.environ.get("MAZE_SPRINT_SPEED", "0.84"))
 
 
 class Pilot:
@@ -1579,7 +1676,7 @@ class Pilot:
         self.start = tuple(int(v) for v in start_cell)
         self.goal = (num_cells - 1, num_cells - 1) if goal_cell is None else tuple(int(v) for v in goal_cell)
 
-        speed = float(os.environ.get("MAZE_SPEED", "0.60"))
+        speed = float(os.environ.get("MAZE_SPEED", "0.66"))
         min_speed = float(os.environ.get("MAZE_MIN_SPEED", "0.30"))
         turn_early = float(os.environ.get("MAZE_TURN_EARLY", "0.50"))
         max_turn = float(os.environ.get("MAZE_MAX_TURN", "1.00"))
@@ -1597,6 +1694,7 @@ class Pilot:
             start=self.start,
             goal=self.goal,
         )
+        self._last_cell = [self.start] * num_envs
 
     def act(self, obs: dict) -> torch.Tensor:
         pos_xy = obs["pos_xy"]
@@ -1605,6 +1703,8 @@ class Pilot:
         scan_xy = obs["scan_xy"]
         scan_z = obs["scan_z"]
         cell = self.ap.cell_of(pos_xy)
+        for e in range(self.num_envs):
+            self._last_cell[e] = (int(cell[e, 0].item()), int(cell[e, 1].item()))
 
         if "lidar_dist" in obs and "lidar_yaw" in obs:
             self.ap.update_walls_from_lidar_raycast(pos_xy, obs["lidar_dist"], obs["lidar_yaw"])
@@ -1614,5 +1714,8 @@ class Pilot:
         walls_now = self.ap.walls_from_height_scan(scan_xy, scan_z, cell)
         return self.ap.step(pos_xy, yaw, walls_now, dt)
 
-    def reset(self, env_ids: torch.Tensor):
-        self.ap.reset(env_ids)
+    def reset(self, env_ids: torch.Tensor, fall_cell: tuple[int, int] | None = None):
+        for e in env_ids.tolist():
+            fc = fall_cell if fall_cell is not None else (self._last_cell[e] if self._last_cell[e] != self.start else None)
+            self.ap.reset(torch.tensor([e], dtype=torch.long, device=self.device), fall_cell=fc)
+            self._last_cell[e] = self.start

@@ -246,6 +246,9 @@ HAZARD_LEVELS = {
 
 def setup_hazard_maze(cfg, num_rows: int = 1, num_cols: int = 1, num_cells: int = HARD_CELLS, **hazards):
     """Turn a maze env config into the hazard maze of the challenge (see ``terrains/hazard_maze.py``)."""
+    import os
+    if os.environ.get("MAZE_CUSTOM_10X10") == "1":
+        num_cells = 10
     setup_maze(cfg, None, num_rows, num_cols)
     old = cfg.scene.terrain
     gen = old.terrain_generator
