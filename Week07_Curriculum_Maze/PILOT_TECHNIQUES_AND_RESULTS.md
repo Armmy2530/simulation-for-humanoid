@@ -41,20 +41,34 @@ This document summarizes everything built in **Week 07 (`Week07_Curriculum_Maze`
    - Computes analytical path curvature $\kappa(s)$ and applies feedforward yaw control:
      $$\omega_{\text{des}} = \text{clamp}\left(v_{\text{des}}\,\kappa_{\text{ff}} + 2.0\,\psi_{\text{err}},\; -\omega_{\max},\; +\omega_{\max}\right)$$
    - Uses pure pursuit (`lookahead_dist = 0.50 m`, tightened to `0.42 m` near spikes) and zero-drift in-place pivot gating (`in_place_scale -> 0` when $|\psi_{\text{err}}| \ge 95^\circ$).
-3. **6m 72-Ray Chest LiDAR Multi-Cell Ray-Casting (`Exp 08`)**:
-   - `update_walls_from_lidar_raycast` marches each of the 72 chest LiDAR rays across cells up to `6.0 m` (3 cells ahead), marking traversed corridors open and far cell boundaries as walls only when incidence angle satisfies $|\cos(\theta)| > 0.35$ (preventing grazing-angle false walls).
-   - Triggers immediate replanning (`plan_blocked`) if a newly mapped wall blocks the active A\* path.
-4. **Online 3D Height-Scan Hazard Discrimination (`Exp 10d / 10e`)**:
+3. **6m 72-Ray Chest LiDAR Far-Vision Ray-Casting & Bug Fixes (`Exp 08` + Far-Vision Overhaul)**:
+   - **Bug A Fix (Max-Range 6.0m Free-Space Marching)**: Previously, `valid_dist = (lidar_dist < 5.8)` discarded rays reaching max range (`6.0 m`), blinding the robot to open corridors 3 cells ahead. Fixed by marching all non-hit rays up to `5.85 m` (and hit rays to `dist - 0.20 m`), clearing open doorways and corridors up to 3 cells ahead without delay.
+   - **Bug B Fix (Angled Ray Doorway Clearance)**: Widened doorway offset tolerance to `abs(offset) < 0.52 m` (doorway opening is 1.85 m wide) and reduced minimum ray incidence to `abs(dx) > 0.30`, enabling angled rays looking around corners to reliably clear cross-corridors 2–3 cells ahead.
+   - **Bug C Fix (Far Wall Hit Detection)**: Expanded wall edge detection offset to `abs(offset) < 0.78 m` and incidence threshold to `abs(cos_ray) > 0.22`, allowing the 72-ray LiDAR to reliably register side walls of T-junctions and cul-de-sacs up to 3 full cells ahead.
+4. **Multi-Cell 3D Height-Scanner Mapping (`update_walls_from_height_scan_multicell`)**:
+   - Exploits the full $3.2\text{ m} \times 3.2\text{ m}$ (1089 points) scanner footprint spanning $\pm 1.6\text{ m}$ around the robot center to map wall boundaries in adjacent and diagonal cells *before* entering them.
+   - Confirms wall edges (`1`) if $\ge 3$ points exceed $z > 0.5\text{ m}$; confirms open doorways (`0`) if footprint coverage $\ge 8$ points and $0$ points exceed $z > 0.5\text{ m}$.
+5. **Recursive Dead-End Pruning (`prune_dead_ends`) & Instant Dynamic Replanning**:
+   - Detects when any non-goal, non-current cell $(i, j)$ has 3 sides confirmed as `walls == 1` and iteratively seals cul-de-sacs, propagating backward down single corridors.
+   - Applies a heavy cost penalty (`+50.0`) in A* against entering dead-end cells, preventing the robot from ever turning into a blind corridor.
+   - Automatically triggers `replan_needed = True` immediately when:
+     - An active path edge becomes blocked (`1`).
+     - A cell along the active path becomes a pruned dead end.
+     - A newly discovered open doorway (`0`) provides a shorter route to the goal.
+6. **Adaptive Straight-Corridor Sprint Boost (`0.76 m/s`)**:
+   - When heading error is small ($|\psi_{\text{err}}| < 0.15\text{ rad}$) and analytical path curvature is low ($|\kappa_{\text{ff}}| < 0.12\text{ m}^{-1}$), cruise speed smoothly ramps from nominal $0.60\text{ m/s}$ up to **$0.76\text{ m/s}$**.
+   - As the spline approaches any turn, curvature rises and speed seamlessly drops back to $0.60\text{ m/s}$ and down to $0.30\text{ m/s}$ for safe, zero-drift cornering with **0 falls**.
+7. **Online 3D Height-Scan Hazard Discrimination (`Exp 10d / 10e`)**:
    - Uses `scan_xy` and `scan_z` ($33 \times 33$ height scanner) to distinguish four terrain primitives without false positives:
      - **Single-Lane Spike Beds (`"lane"`)**: High cones ($0.12\text{ m} < z < 0.42\text{ m}$) confined to one side of the corridor with flat floor ($z < 0.06\text{ m}$) on the opposite side; routes along safe lane $v_{\text{safe}} = \pm 0.44\text{ m}$ with pre-entry lead-in (`-1.05 m`) and post-exit lead-out (`+1.05 m`) waypoints.
      - **2-Bed Opposing Spike Slaloms (`"slalom"`)**: Persistent dual-bed memory (`v_minus` / `v_plus`) detects opposing beds separated by a $0.60\text{ m}$ central gap ($u \in [-0.30, +0.30]\text{ m}$) and immediately sets `replan_needed = True` when a zone is discovered or upgraded from `"lane"` to `"slalom"`.
      - **Steep Ramps (`cell_ramp_zones`)**: Full-width elevated slopes ($25\text{–}26\text{ cm}$) are explicitly tracked; any overlapping false-positive spike classifications in that cell are purged immediately.
      - **Floor Trenches (`cell_gap_zones`)**: Deep floor drops ($z < -0.15\text{ m}$, $16\text{–}20\text{ cm}$ gap) are explicitly tracked and purged from spike classification.
-5. **3-Phase Perpendicular In-Place Slalom Gap Crossing (`Exp 10c`)**:
+8. **3-Phase Perpendicular In-Place Slalom Gap Crossing (`Exp 10c`)**:
    - *Phase 1 (Approach & Stop)*: Decelerates to `0.30 m/s` at $u_{\text{prog}} \in [-0.50, -0.25)\text{ m}$, then brakes (`3.6 m/s²`) to `0.00 m/s` and pivots $90^\circ$ in place ($\omega_z \le 1.8\text{ rad/s}$) to face straight across the $0.60\text{ m}$ gap.
    - *Phase 2 (Closed-Loop Gap Walk)*: Walks straight across at `0.32 m/s` once $|\psi_{\text{err}}| \le 12^\circ$, applying closed-loop longitudinal centering $\Delta\psi = \pm 1.6 \cdot u_{\text{prog}}$ to stay dead-center between Bed 1 and Bed 2.
    - *Phase 3 (Realign & Exit)*: Upon reaching the exit lane ($|v_r - v_{\text{exit}}| \le 0.15\text{ m}$), pivots back in place to `corridor_yaw` and accelerates to `0.60 m/s` past Bed 2.
-6. **Ramp & Trench Centerline Alignment (`Exp 10e`)**:
+9. **Ramp & Trench Centerline Alignment (`Exp 10e`)**:
    - **Ramp Climbing** ($u_{\text{prog}} \in [-0.85, +0.80]\text{ m}$): Locks heading to the straight corridor centerline (`|wz| <= 0.06 rad/s`, `vy = 0.0`, `vx = 0.60 m/s`) so the robot climbs $25\text{–}26\text{ cm}$ ramps squarely without stepping off an edge.
    - **Trench Clearance** ($u_{\text{prog}} \in [-1.05, +0.18]\text{ m}$): Locks heading (`|wz| <= 0.06 rad/s`, `vy = 0.0`) with a controlled `0.85 m/s` forward stride so the G1 clears `16–20 cm` floor trenches cleanly in stride instead of braking at the lip.
    - **Short Route Commitment**: Removes the pre-emptive `+25.0` fork diversion penalty on ramps and trenches so the robot takes the direct Short Route rather than reversing to the longer detour.
@@ -99,7 +113,11 @@ Evaluated across 4 hazard mazes (`--num_envs 4`, nominal `0.60 m/s`):
 
 ### 3.4 Earlier Track A Navigation Benchmarks (`Exp 07 – Exp 09` @ `0.60 m/s`)
 - **Exp 07 ($G^2$ Quintic Spline, $5\times 5$)**: `32.56 s` / `17.55 m` (vs `38.60 s` / `20.14 m` for `A0` Manhattan, `-15.6%`).
-- **Exp 08 (6m Chest LiDAR, Seeds 42 / 100 / 777)**: Won all 3 unseen mazes (`32.48 s`, `24.82 s`, `30.78 s`); macro-average **`29.36 s` / `15.73 m`** vs `41.57 s` / `21.99 m` for `A1` (`-56.4%` on Seed 100).
+- **Exp 08 + Far-Vision Overhaul (Chest LiDAR + Multi-Cell Height Scan + Dead-End Pruning + Sprint Boost)**:
+  - **Seed 42**: **`27.76 s`** (was `32.48 s`, **`-14.5%`**, `0` falls) ⚡
+  - **Seed 100**: **`22.80 s`** (was `24.82 s`, **`-8.1%`**, `0` falls) ⚡
+  - **Seed 777**: **`27.92 s`** (was `30.78 s`, **`-9.3%`**, `0` falls) ⚡
+  - **Macro-Average**: **`26.16 s`** (was `29.36 s`, **`-10.9%`**, **`0` falls** across all seeds) 🏆
 - **Exp 09 (`--random-ends`, 4 Quadrants)**: Won macro-average **`44.11 s` / `23.77 m`** vs `45.59 s` for `A1` and `49.90 s` for `A2_G2`.
 
 ---

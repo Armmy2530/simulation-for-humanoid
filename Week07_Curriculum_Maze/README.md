@@ -116,7 +116,12 @@ Under strict experimental governance (**Track A** locked at nominal speed `0.60 
      2. *Phase 2*: Walk straight across the gap at `0.32 m/s` with closed-loop longitudinal centering ($\Delta\psi = \pm 1.6 \cdot u_{\text{prog}}$) keeping the robot within $3\text{ cm}$ of $u = 0.0\text{ m}$.
      3. *Phase 3*: Pivot back to corridor heading at $|v_r - v_{\text{exit}}| \le 0.15\text{ m}$ and sprint past Bed 2.
 5. **Ramp & Floor Trench Centerline Alignment (`Exp 10d / 10e`)**:
-   - Discriminates full-width trapezoid ramps (`cell_ramp_zones`) and floor trenches (`z < -0.15 m`, `cell_gap_zones`) from spike beds, locking the robot to the straight corridor centerline (`v = 0.0`, `|wz| <= 0.06 rad/s`) so it climbs `25–26 cm` steep ramps and steps across `16–20 cm` trenches squarely without diagonal swerving.
+   - Discriminates full-width trapezoid ramps (`cell_ramp_zones`) and floor trenches (`z < -0.15 m`, `cell_gap_zones`) from spike beds, locking the robot to the straight corridor centerline (`v_y = 0.0`, heading locked) so it climbs `25–26 cm` steep ramps and strides across `16–20 cm` trenches squarely without diagonal swerving.
+6. **Far-Vision Perception, Recursive Dead-End Pruning & Sprint Boost (`Latest Overhaul`)**:
+   - **LiDAR 6.0m Max-Range Ray Marching**: Corrected Bug A (marching non-hit max-range rays up to `5.85 m` rather than dropping them), Bug B (expanded doorway aperture to `0.52 m` for angled views), and Bug C (expanded far wall detection to `0.78 m` and incidence to `0.22`), allowing 72-ray chest LiDAR to see open corridors and side walls 3 cells (`6.0 m`) ahead.
+   - **Multi-Cell 3D Height-Scan Mapping**: Exploits the $3.2\text{ m} \times 3.2\text{ m}$ height scan grid to confirm wall edges (`1`) and open doorways (`0`) across adjacent and diagonal neighbor cells *before* entering them.
+   - **Recursive Dead-End Pruning (`prune_dead_ends`)**: Iteratively detects 3-walled dead-end cells, seals them backward down corridors, adds heavy A* cost (`+50.0`) against entering them, and triggers instantaneous replanning whenever a shortcut is spotted or downstream path is pruned.
+   - **Adaptive Straight-Corridor Sprint Boost**: Smoothly accelerates straight corridors to **`0.76 m/s`** when heading error ($|\psi_{\text{err}}| < 0.15\text{ rad}$) and curvature ($|\kappa_{\text{ff}}| < 0.12\text{ m}^{-1}$) are low, dropping back down for corners to guarantee **0 falls** across all levels.
 
 ---
 

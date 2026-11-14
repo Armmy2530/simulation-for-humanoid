@@ -199,6 +199,8 @@ class MazeAutopilot:
         self.cell_ramp_zones = [set() for _ in range(num_envs)]
         self.cell_gap_zones = [set() for _ in range(num_envs)]
         self.replan_needed = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.walls_updated = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.sprint_speed = float(os.environ.get("MAZE_SPRINT_SPEED", "0.76"))
         self.debug = False
 
     def update_hazards_from_height_scan(self, pos_xy: torch.Tensor, scan_xy: torch.Tensor, scan_z: torch.Tensor):
@@ -469,106 +471,218 @@ class MazeAutopilot:
     def update_walls_from_lidar_raycast(
         self, pos_xy: torch.Tensor, lidar_dist: torch.Tensor, lidar_yaw: torch.Tensor
     ):
-        """Update occupancy grid self.walls using 72-ray 6m LiDAR."""
+        """Update occupancy grid self.walls using 72-ray 6m LiDAR.
+        
+        Fixes Bugs A, B, C:
+        - Bug A: Max-range rays (dist >= 5.8m up to 6.0m) are ray-marched up to 5.85m to clear open corridors.
+        - Bug B: Angled rays (|dx| > 0.30, |dy| > 0.30) with wide aperture (|offset| < 0.52) clear doorways 2-3 cells ahead.
+        - Bug C: Wall hit detection uses wide aperture (|offset| < 0.78) and shallow incidence (|cos| > 0.22)
+          to reliably detect side walls and dead-end back walls up to 6.0m away.
+        """
         N = pos_xy.shape[0]
         n, c = self.n, self.c
         px = pos_xy[:, 0]
         py = pos_xy[:, 1]
 
-        valid_dist = (lidar_dist < 5.8) & (lidar_dist > 0.1)
+        # Rays that hit obstacles within valid range
+        hit_mask = (lidar_dist < 5.85) & (lidar_dist > 0.20)
+        # All valid rays for free-space ray marching (including 6.0m max-range unobstructed rays)
+        ray_mask = (lidar_dist > 0.50) & torch.isfinite(lidar_dist)
         hx = pos_xy[:, None, 0] + lidar_dist * torch.cos(lidar_yaw)
         hy = pos_xy[:, None, 1] + lidar_dist * torch.sin(lidar_yaw)
 
         for e in range(N):
             p_x = float(px[e].item())
             p_y = float(py[e].item())
-            valid_e = valid_dist[e]
-            if not valid_e.any():
-                continue
 
-            h_x = hx[e, valid_e].detach().cpu().numpy()
-            h_y = hy[e, valid_e].detach().cpu().numpy()
-            d_e = lidar_dist[e, valid_e].detach().cpu().numpy()
-            y_e = lidar_yaw[e, valid_e].detach().cpu().numpy()
+            # 1. Wall hit classification (Bug C)
+            hits_e = hit_mask[e]
+            if hits_e.any():
+                h_x = hx[e, hits_e].detach().cpu().numpy()
+                h_y = hy[e, hits_e].detach().cpu().numpy()
+                y_e = lidar_yaw[e, hits_e].detach().cpu().numpy()
 
-            # 1. Wall hit classification
-            for rx, ry, yaw in zip(h_x, h_y, y_e):
-                cos_ray = math.cos(float(yaw))
-                sin_ray = math.sin(float(yaw))
+                for rx, ry, yaw in zip(h_x, h_y, y_e):
+                    cos_ray = math.cos(float(yaw))
+                    sin_ray = math.sin(float(yaw))
 
-                # Vertical walls at x = (k + 0.5) * c (normal along x -> cos_incidence = |cos_ray|)
-                k_cand = int(round((rx / c) - 0.5))
-                x_wall = (k_cand + 0.5) * c
-                if abs(rx - x_wall) <= 0.20:
-                    j = int(round(ry / c))
-                    if 0 <= j < n and -1 <= k_cand <= n - 1:
-                        offset = ry - j * c
-                        if abs(offset) < 0.55 and abs(cos_ray) > 0.35:
-                            if 0 <= k_cand < n:
-                                self.wall_hit_counts[e, k_cand, j, 0] += 1
-                                if self.wall_hit_counts[e, k_cand, j, 0] >= 2:
-                                    self.walls[e, k_cand, j, 0] = 1
-                            if 0 <= k_cand + 1 < n:
-                                self.wall_hit_counts[e, k_cand + 1, j, 2] += 1
-                                if self.wall_hit_counts[e, k_cand + 1, j, 2] >= 2:
-                                    self.walls[e, k_cand + 1, j, 2] = 1
+                    # Vertical walls at x = (k + 0.5) * c
+                    k_cand = int(round((rx / c) - 0.5))
+                    x_wall = (k_cand + 0.5) * c
+                    if abs(rx - x_wall) <= 0.20:
+                        j = int(round(ry / c))
+                        if 0 <= j < n and -1 <= k_cand <= n - 1:
+                            offset = ry - j * c
+                            if abs(offset) < 0.78 and abs(cos_ray) > 0.22:
+                                if 0 <= k_cand < n:
+                                    self.wall_hit_counts[e, k_cand, j, 0] += 1
+                                    if self.wall_hit_counts[e, k_cand, j, 0] >= 2 and self.walls[e, k_cand, j, 0] != 1:
+                                        self.walls[e, k_cand, j, 0] = 1
+                                        self.walls_updated[e] = True
+                                if 0 <= k_cand + 1 < n:
+                                    self.wall_hit_counts[e, k_cand + 1, j, 2] += 1
+                                    if self.wall_hit_counts[e, k_cand + 1, j, 2] >= 2 and self.walls[e, k_cand + 1, j, 2] != 1:
+                                        self.walls[e, k_cand + 1, j, 2] = 1
+                                        self.walls_updated[e] = True
 
-                # Horizontal walls at y = (m + 0.5) * c (normal along y -> cos_incidence = |sin_ray|)
-                m_cand = int(round((ry / c) - 0.5))
-                y_wall = (m_cand + 0.5) * c
-                if abs(ry - y_wall) <= 0.20:
-                    i = int(round(rx / c))
-                    if 0 <= i < n and -1 <= m_cand <= n - 1:
-                        offset = rx - i * c
-                        if abs(offset) < 0.55 and abs(sin_ray) > 0.35:
-                            if 0 <= m_cand < n:
-                                self.wall_hit_counts[e, i, m_cand, 1] += 1
-                                if self.wall_hit_counts[e, i, m_cand, 1] >= 2:
-                                    self.walls[e, i, m_cand, 1] = 1
-                            if 0 <= m_cand + 1 < n:
-                                self.wall_hit_counts[e, i, m_cand + 1, 3] += 1
-                                if self.wall_hit_counts[e, i, m_cand + 1, 3] >= 2:
-                                    self.walls[e, i, m_cand + 1, 3] = 1
+                    # Horizontal walls at y = (m + 0.5) * c
+                    m_cand = int(round((ry / c) - 0.5))
+                    y_wall = (m_cand + 0.5) * c
+                    if abs(ry - y_wall) <= 0.20:
+                        i = int(round(rx / c))
+                        if 0 <= i < n and -1 <= m_cand <= n - 1:
+                            offset = rx - i * c
+                            if abs(offset) < 0.78 and abs(sin_ray) > 0.22:
+                                if 0 <= m_cand < n:
+                                    self.wall_hit_counts[e, i, m_cand, 1] += 1
+                                    if self.wall_hit_counts[e, i, m_cand, 1] >= 2 and self.walls[e, i, m_cand, 1] != 1:
+                                        self.walls[e, i, m_cand, 1] = 1
+                                        self.walls_updated[e] = True
+                                if 0 <= m_cand + 1 < n:
+                                    self.wall_hit_counts[e, i, m_cand + 1, 3] += 1
+                                    if self.wall_hit_counts[e, i, m_cand + 1, 3] >= 2 and self.walls[e, i, m_cand + 1, 3] != 1:
+                                        self.walls[e, i, m_cand + 1, 3] = 1
+                                        self.walls_updated[e] = True
 
-            # 2. Free space ray marching
-            for dist, yaw in zip(d_e, y_e):
-                march_limit = max(0.0, float(dist) - 0.25)
-                if march_limit < 0.5:
-                    continue
-                dx = math.cos(float(yaw))
-                dy = math.sin(float(yaw))
+            # 2. Free space ray marching (Bugs A & B)
+            rays_e = ray_mask[e]
+            if rays_e.any():
+                d_e = lidar_dist[e, rays_e].detach().cpu().numpy()
+                y_e = lidar_yaw[e, rays_e].detach().cpu().numpy()
 
-                # Vertical grid lines (aperture center |offset| < 0.35 and cos_incidence |dx| > 0.50)
-                if abs(dx) > 0.50:
-                    for k in range(-1, n):
-                        xw = (k + 0.5) * c
-                        s = (xw - p_x) / dx
-                        if 0.15 < s < march_limit:
-                            y_cross = p_y + s * dy
-                            j = int(round(y_cross / c))
-                            if 0 <= j < n:
-                                offset = y_cross - j * c
-                                if abs(offset) < 0.35:
-                                    if 0 <= k < n and self.walls[e, k, j, 0] == -1:
-                                        self.walls[e, k, j, 0] = 0
-                                    if 0 <= k + 1 < n and self.walls[e, k + 1, j, 2] == -1:
-                                        self.walls[e, k + 1, j, 2] = 0
+                for dist, yaw in zip(d_e, y_e):
+                    # Bug A fix: max-range rays (dist >= 5.85m) march all the way through open corridors!
+                    march_limit = 5.85 if dist >= 5.85 else max(0.0, float(dist) - 0.20)
+                    if march_limit < 0.5:
+                        continue
+                    dx = math.cos(float(yaw))
+                    dy = math.sin(float(yaw))
 
-                # Horizontal grid lines (aperture center |offset| < 0.35 and cos_incidence |dy| > 0.50)
-                if abs(dy) > 0.50:
-                    for m in range(-1, n):
-                        yw = (m + 0.5) * c
-                        s = (yw - p_y) / dy
-                        if 0.15 < s < march_limit:
-                            x_cross = p_x + s * dx
-                            i = int(round(x_cross / c))
-                            if 0 <= i < n:
-                                offset = x_cross - i * c
-                                if abs(offset) < 0.35:
-                                    if 0 <= m < n and self.walls[e, i, m, 1] == -1:
-                                        self.walls[e, i, m, 1] = 0
-                                    if 0 <= m + 1 < n and self.walls[e, i, m + 1, 3] == -1:
-                                        self.walls[e, i, m + 1, 3] = 0
+                    # Vertical grid lines (Bug B: abs(dx) > 0.30, abs(offset) < 0.52)
+                    if abs(dx) > 0.30:
+                        for k in range(-1, n):
+                            xw = (k + 0.5) * c
+                            s = (xw - p_x) / dx
+                            if 0.15 < s < march_limit:
+                                y_cross = p_y + s * dy
+                                j = int(round(y_cross / c))
+                                if 0 <= j < n:
+                                    offset = y_cross - j * c
+                                    if abs(offset) < 0.52:
+                                        if 0 <= k < n and self.walls[e, k, j, 0] == -1:
+                                            self.walls[e, k, j, 0] = 0
+                                            self.walls_updated[e] = True
+                                        if 0 <= k + 1 < n and self.walls[e, k + 1, j, 2] == -1:
+                                            self.walls[e, k + 1, j, 2] = 0
+                                            self.walls_updated[e] = True
+
+                    # Horizontal grid lines (Bug B: abs(dy) > 0.30, abs(offset) < 0.52)
+                    if abs(dy) > 0.30:
+                        for m in range(-1, n):
+                            yw = (m + 0.5) * c
+                            s = (yw - p_y) / dy
+                            if 0.15 < s < march_limit:
+                                x_cross = p_x + s * dx
+                                i = int(round(x_cross / c))
+                                if 0 <= i < n:
+                                    offset = x_cross - i * c
+                                    if abs(offset) < 0.52:
+                                        if 0 <= m < n and self.walls[e, i, m, 1] == -1:
+                                            self.walls[e, i, m, 1] = 0
+                                            self.walls_updated[e] = True
+                                        if 0 <= m + 1 < n and self.walls[e, i, m + 1, 3] == -1:
+                                            self.walls[e, i, m + 1, 3] = 0
+                                            self.walls_updated[e] = True
+
+    def update_walls_from_height_scan_multicell(
+        self, pos_xy: torch.Tensor, hits_xy: torch.Tensor, hits_z: torch.Tensor, ground_z: float = 0.0
+    ):
+        """Analyze 3.2m x 3.2m height scanner to detect walls and open doorways for all cells within 1.45m."""
+        import numpy as np
+
+        N = pos_xy.shape[0]
+        n, c = self.n, self.c
+        half = 0.5 * c
+
+        for e in range(N):
+            px = float(pos_xy[e, 0].item())
+            py = float(pos_xy[e, 1].item())
+            h_xy = hits_xy[e].detach().cpu().numpy()
+            h_z = hits_z[e].detach().cpu().numpy()
+
+            cur_ci = int(round(px / c))
+            cur_cj = int(round(py / c))
+
+            for ci in range(max(0, cur_ci - 1), min(n, cur_ci + 2)):
+                for cj in range(max(0, cur_cj - 1), min(n, cur_cj + 2)):
+                    cell_cx = ci * c
+                    cell_cy = cj * c
+
+                    for d, (dx, dy) in enumerate(DIRS):
+                        edge_x = cell_cx + half * dx
+                        edge_y = cell_cy + half * dy
+
+                        dist_sq = (edge_x - px) ** 2 + (edge_y - py) ** 2
+                        if dist_sq > 1.45 ** 2:
+                            continue
+
+                        rel_x = h_xy[:, 0] - cell_cx
+                        rel_y = h_xy[:, 1] - cell_cy
+                        along = rel_x * dx + rel_y * dy
+                        across = rel_x * dy - rel_y * dx
+
+                        # Check 1: Blocked wall detection (along +-0.15m, across +-0.65m, tall >= 3)
+                        in_wall_box = (np.abs(along - half) < 0.15) & (np.abs(across) < 0.65)
+                        tall_pts = (h_z > ground_z + 0.5) & in_wall_box
+                        tall_count = np.count_nonzero(tall_pts)
+
+                        ni, nj = ci + dx, cj + dy
+                        if tall_count >= 3:
+                            if self.walls[e, ci, cj, d] != 1:
+                                self.walls[e, ci, cj, d] = 1
+                                self.walls_updated[e] = True
+                            if 0 <= ni < n and 0 <= nj < n and self.walls[e, ni, nj, (d + 2) % 4] != 1:
+                                self.walls[e, ni, nj, (d + 2) % 4] = 1
+                                self.walls_updated[e] = True
+                        elif tall_count == 0 and 0 <= ni < n and 0 <= nj < n:
+                            # Check 2: Open doorway detection (along +-0.18m, across +-0.55m, total rays >= 8)
+                            in_door_box = (np.abs(along - half) < 0.18) & (np.abs(across) < 0.55)
+                            total_rays = np.count_nonzero(in_door_box)
+                            if total_rays >= 8:
+                                if self.walls[e, ci, cj, d] == -1:
+                                    self.walls[e, ci, cj, d] = 0
+                                    self.walls_updated[e] = True
+                                if self.walls[e, ni, nj, (d + 2) % 4] == -1:
+                                    self.walls[e, ni, nj, (d + 2) % 4] = 0
+                                    self.walls_updated[e] = True
+
+    def prune_dead_ends(self, env_id: int, cur_cell: tuple[int, int]) -> set[tuple[int, int]]:
+        """Identify dead ends and recursively propagate blocked edges backward."""
+        n = self.n
+        goal = self.goal
+        walls = self.walls[env_id].cpu().numpy()
+
+        eff_walls = (walls == 1).copy()
+        dead_ends = set()
+
+        changed = True
+        while changed:
+            changed = False
+            for i in range(n):
+                for j in range(n):
+                    cell = (i, j)
+                    if cell == goal or cell == cur_cell or cell in dead_ends:
+                        continue
+                    blocked_count = sum(eff_walls[i, j, d] for d in range(4))
+                    if blocked_count >= 3:
+                        dead_ends.add(cell)
+                        changed = True
+                        for d, (di, dj) in enumerate(DIRS):
+                            ni, nj = i + di, j + dj
+                            if 0 <= ni < n and 0 <= nj < n:
+                                eff_walls[ni, nj, (d + 2) % 4] = True
+
+        return dead_ends
 
     # ------------------------------------------------------------------ 2. planning
     def flood_fill(self, walls: torch.Tensor) -> torch.Tensor:
@@ -625,7 +739,7 @@ class MazeAutopilot:
         raise ValueError(f"unknown strategy {self.strategy!r}")
 
     def plan_full_path(self, start_cell: tuple[int, int] | list[int], env_id: int = 0, turn_penalty: float = 0.05) -> list[tuple[int, int]]:
-        """A* search with turn penalties for minimum-time path execution."""
+        """A* search with turn penalties and dead-end avoidance for minimum-time path execution."""
         import heapq
         import numpy as np
 
@@ -634,6 +748,7 @@ class MazeAutopilot:
         start = tuple(int(v) for v in start_cell)
         goal = self.goal
         has_moved = int(self.cells_walked[env_id].item()) > 0
+        dead_ends = self.prune_dead_ends(env_id, start)
 
         # Priority queue: (f_score, g_score, (i, j), heading)
         pq = [(0.0, 0.0, start, int(self.heading[env_id].item()))]
@@ -659,7 +774,8 @@ class MazeAutopilot:
                     unk_cost = 0.08 if (self.use_lidar_lookahead and walls[curr[0], curr[1], d] == -1) else 0.0
                     rev_cost = 0.08 if (curr == start and has_moved and d == (h + 2) % 4) else 0.0
                     hazard_cost = float(self.cell_hazard_cost[env_id, ni, nj].item())
-                    new_g = g + 1.0 + turn_cost + unk_cost + rev_cost + hazard_cost
+                    dead_cost = 50.0 if (ni, nj) in dead_ends else 0.0
+                    new_g = g + 1.0 + turn_cost + unk_cost + rev_cost + hazard_cost + dead_cost
                     st = ((ni, nj), d)
                     if new_g < g_costs.get(st, 1e9) - 1e-6:
                         g_costs[st] = new_g
@@ -976,7 +1092,10 @@ class MazeAutopilot:
         # Normal cornering (|yaw_err| <= 75 deg): full speed profile (100% Exp 07/08 momentum)
         # In-place pivot (|yaw_err| >= 95 deg): in_place_scale = 0 -> zero forward/lateral drift
         cos_align = torch.clamp(torch.cos(yaw_err), min=0.0)
-        v_des = self.min_speed + (self.speed - self.min_speed) * (cos_align ** 1.2)
+        # Straight-corridor sprint boost: when heading error is small and path curvature is low
+        is_straight = (torch.abs(kappa_ff) < 0.12) & (torch.abs(yaw_err) < 0.15)
+        v_max = torch.where(is_straight, torch.full_like(yaw_err, self.sprint_speed), torch.full_like(yaw_err, self.speed))
+        v_des = self.min_speed + (v_max - self.min_speed) * (cos_align ** 1.2)
         in_place_scale = torch.clamp((math.radians(95.0) - torch.abs(yaw_err)) / math.radians(20.0), 0.0, 1.0)
         v_des = v_des * in_place_scale
 
@@ -1269,14 +1388,19 @@ class MazeAutopilot:
         still_there = (cell == self.origin).all(dim=1) & ~self.need_decision
         surprise = still_there & walls_now.gather(1, self.heading.unsqueeze(1)).squeeze(1)
         surprise &= self.walls[torch.arange(len(cell), device=self.device), cell[:, 0], cell[:, 1], self.heading] == 0
-        # Check if currently planned path is blocked by a wall discovered ahead
+        # Check if currently planned path is blocked by a wall discovered ahead or entered a pruned dead-end
         plan_blocked = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         if self.use_lidar_lookahead and self.use_astar:
             for e in range(self.num_envs):
                 c_path = self.current_cell_paths[e]
                 if c_path is not None and len(c_path) >= 2:
+                    cur_c = (int(cell[e, 0].item()), int(cell[e, 1].item()))
+                    d_ends = self.prune_dead_ends(e, cur_c)
                     for idx_p in range(len(c_path) - 1):
                         c1, c2 = c_path[idx_p], c_path[idx_p + 1]
+                        if tuple(c2) in d_ends:
+                            plan_blocked[e] = True
+                            break
                         di = c2[0] - c1[0]
                         dj = c2[1] - c1[1]
                         for d_idx, ddir in enumerate(DIRS):
@@ -1287,9 +1411,17 @@ class MazeAutopilot:
                         if plan_blocked[e]:
                             break
 
+                # Shortcut detection: if walls/corridors were updated and robot is mid-corridor
+                if not plan_blocked[e] and self.walls_updated[e] and c_path is not None and len(c_path) >= 3:
+                    cur_c = (int(cell[e, 0].item()), int(cell[e, 1].item()))
+                    new_path = self.plan_full_path(cur_c, e)
+                    if len(new_path) < len(c_path) - 1:
+                        plan_blocked[e] = True
+
         decide = self.need_decision | arrived | surprise | plan_blocked | self.replan_needed
         if decide.any():
             idx = torch.nonzero(decide).squeeze(1)
+            self.walls_updated[idx] = False
             # remember what we saw (and the same wall from the neighbour's side)
             # Local 3D height scanner (scan_z) is the ultimate ground truth for cell[idx]
             for d, (di, dj) in enumerate(DIRS):
@@ -1415,6 +1547,7 @@ class A4_Hazard_G2(MazeAutopilot):
         self.max_ang_acc = 3.00
         self.direct_corner = True
         self.lateral_margin = True
+        self.corner_cut = float(os.environ.get("MAZE_CORNER_CUT", 0.38))
         self.use_astar = True
         self.curve_mode = "g2_quintic"
         self.r_fillet = 0.65
@@ -1424,6 +1557,7 @@ class A4_Hazard_G2(MazeAutopilot):
         self.spike_avoid_mode = "slalom_s_curve"
         self.use_fork_arbitrator = True
         self.persist_map_on_reset = True
+        self.sprint_speed = float(os.environ.get("MAZE_SPRINT_SPEED", "0.76"))
 
 
 class Pilot:
@@ -1476,6 +1610,7 @@ class Pilot:
             self.ap.update_walls_from_lidar_raycast(pos_xy, obs["lidar_dist"], obs["lidar_yaw"])
 
         self.ap.update_hazards_from_height_scan(pos_xy, scan_xy, scan_z)
+        self.ap.update_walls_from_height_scan_multicell(pos_xy, scan_xy, scan_z)
         walls_now = self.ap.walls_from_height_scan(scan_xy, scan_z, cell)
         return self.ap.step(pos_xy, yaw, walls_now, dt)
 
